@@ -109,11 +109,23 @@ export class CampusScene {
     // In desktop: OrbitControls moves camera directly
     this.playerGroup.add(this.camera);
     this.scene.add(this.playerGroup);
-    // Desktop start — keep camera inside the cylindrical room (r=21, ceiling y≈9.2)
-    this.camera.position.set(0, 6, 16);
+
+    // ── Spawn point (clear of the central fountain) ──────────
+    // The fountain occupies a ~5m disc centred on (0,0,0); the inner
+    // ring extends out to r=6.5. We arrive at z = +16, facing -Z so
+    // the fountain + chandelier are framed dead ahead and the player
+    // is well outside any portal trigger radius.
+    const SPAWN = { x: 0, y: 0, z: 16 };
+    this.spawnPoint = new THREE.Vector3(SPAWN.x, SPAWN.y, SPAWN.z);
+
+    // Desktop start — same arrival spot, but raised a bit so the
+    // overview reads cinematically and OrbitControls can pan freely.
+    this.camera.position.set(SPAWN.x, 6, SPAWN.z);
     this.camera.lookAt(0, 1.5, 0);
-    // VR start: playerGroup at origin, camera at eye height
-    this.playerGroup.position.set(0, 0, 0);
+    // VR start: rig on the floor at the spawn point. With Y rotation
+    // = 0 the headset's default forward is -Z, which already points
+    // at the fountain — so no extra rotation is needed.
+    this.playerGroup.position.set(SPAWN.x, SPAWN.y, SPAWN.z);
   }
 
   // ── Lights ────────────────────────────────────────────────
@@ -131,35 +143,182 @@ export class CampusScene {
   }
 
   // ── Floor ─────────────────────────────────────────────────
+  // Outer ring: warm walnut parquet pattern, generated procedurally
+  // so the floor isn't a flat colour. Inner circle: cream marble with
+  // subtle grey veins. Plus a brass compass-rose torus on top.
   _buildFloor() {
-    const mat = new THREE.MeshStandardMaterial({ color: 0x7a5230, roughness: 0.85 });
+    // Outer parquet
+    const parquetTex = this._makeHubParquetTexture();
+    parquetTex.wrapS = parquetTex.wrapT = THREE.RepeatWrapping;
+    parquetTex.repeat.set(6, 6);
+    parquetTex.colorSpace = THREE.SRGBColorSpace;
+    const mat = new THREE.MeshStandardMaterial({
+      map: parquetTex, roughness: 0.78, metalness: 0.05,
+    });
     const floor = new THREE.Mesh(new THREE.CylinderGeometry(22, 22, 0.3, 72), mat);
     floor.position.y = -0.15; floor.receiveShadow = true;
     this.scene.add(floor);
     this.floorMesh = floor; // exposed for XR teleport
 
-    // Inner circle
-    const innerMat = new THREE.MeshStandardMaterial({ color: 0xa07848, roughness: 0.75 });
+    // Inner marble disc
+    const marbleTex = this._makeHubMarbleTexture();
+    marbleTex.wrapS = marbleTex.wrapT = THREE.ClampToEdgeWrapping;
+    marbleTex.colorSpace = THREE.SRGBColorSpace;
+    const innerMat = new THREE.MeshStandardMaterial({
+      map: marbleTex, roughness: 0.35, metalness: 0.12,
+    });
     const inner = new THREE.Mesh(new THREE.CylinderGeometry(6.5, 6.5, 0.32, 64), innerMat);
     inner.position.y = -0.14; this.scene.add(inner);
 
     // Compass rose ring
-    const ringMat = new THREE.MeshStandardMaterial({ color: 0xd4a84a, metalness: 0.4, roughness: 0.5 });
+    const ringMat = new THREE.MeshStandardMaterial({ color: 0xd4a84a, metalness: 0.6, roughness: 0.32 });
     const rose = new THREE.Mesh(new THREE.TorusGeometry(5, 0.12, 8, 64), ringMat);
     rose.rotation.x = Math.PI/2; rose.position.y = 0.02; this.scene.add(rose);
+    // A second, finer brass ring inside the first for visual layering.
+    const innerRose = new THREE.Mesh(new THREE.TorusGeometry(3.4, 0.06, 8, 64), ringMat);
+    innerRose.rotation.x = Math.PI/2; innerRose.position.y = 0.02; this.scene.add(innerRose);
+  }
+
+  // Procedural walnut parquet texture for the hub outer floor.
+  // Renders a herringbone grid of warm walnut planks with subtle
+  // grain so the floor reads as wood, not flat brown.
+  _makeHubParquetTexture() {
+    const W = 512, H = 512;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    const base = ctx.createLinearGradient(0, 0, W, H);
+    base.addColorStop(0, '#7a5230');
+    base.addColorStop(1, '#5a3818');
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, W, H);
+
+    // Herringbone planks: 32x128 rectangles, alternating rotation.
+    const plankW = 32, plankH = 128;
+    ctx.save();
+    for (let y = -plankH; y < H + plankH; y += plankH / 2) {
+      for (let x = -plankH; x < W + plankH; x += plankH) {
+        const offX = ((y / (plankH / 2)) | 0) % 2 === 0 ? 0 : plankH / 2;
+        // Slight per-plank colour variation
+        const shade = 0.85 + Math.random() * 0.25;
+        ctx.fillStyle = `rgba(0,0,0,${(1 - shade) * 0.35})`;
+        ctx.fillRect(x + offX, y, plankW, plankH);
+        ctx.strokeStyle = 'rgba(255, 200, 150, 0.05)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + offX + 0.5, y + 0.5, plankW - 1, plankH - 1);
+        // Wood grain whispers within plank
+        ctx.strokeStyle = 'rgba(255, 200, 130, 0.05)';
+        for (let i = 0; i < 4; i++) {
+          const gy = y + Math.random() * plankH;
+          ctx.beginPath();
+          ctx.moveTo(x + offX, gy);
+          ctx.lineTo(x + offX + plankW, gy + (Math.random() - 0.5) * 3);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+
+    // Soft vignette for depth.
+    const vg = ctx.createRadialGradient(W/2, H/2, W*0.2, W/2, H/2, W*0.7);
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(1, 'rgba(0,0,0,0.18)');
+    ctx.fillStyle = vg;
+    ctx.fillRect(0, 0, W, H);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // Procedural cream marble texture for the inner floor disc.
+  _makeHubMarbleTexture() {
+    const W = 1024, H = 1024;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Creamy ivory base.
+    ctx.fillStyle = '#f3e9d6';
+    ctx.fillRect(0, 0, W, H);
+
+    // Soft grey veins, drawn as a few smooth curves.
+    ctx.strokeStyle = 'rgba(110, 90, 70, 0.18)';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 14; i++) {
+      ctx.beginPath();
+      let x = Math.random() * W;
+      let y = Math.random() * H;
+      ctx.moveTo(x, y);
+      for (let s = 0; s < 8; s++) {
+        x += (Math.random() - 0.5) * 220;
+        y += (Math.random() - 0.5) * 220;
+        ctx.quadraticCurveTo(
+          x + (Math.random() - 0.5) * 80,
+          y + (Math.random() - 0.5) * 80, x, y);
+      }
+      ctx.stroke();
+    }
+    // A few darker, finer veins
+    ctx.strokeStyle = 'rgba(80, 60, 40, 0.10)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 22; i++) {
+      ctx.beginPath();
+      let x = Math.random() * W;
+      let y = Math.random() * H;
+      ctx.moveTo(x, y);
+      for (let s = 0; s < 6; s++) {
+        x += (Math.random() - 0.5) * 150;
+        y += (Math.random() - 0.5) * 150;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    // Gentle radial highlight in the centre to feel polished.
+    const hi = ctx.createRadialGradient(W/2, H/2, 50, W/2, H/2, W*0.55);
+    hi.addColorStop(0, 'rgba(255, 248, 230, 0.55)');
+    hi.addColorStop(1, 'rgba(255, 248, 230, 0)');
+    ctx.fillStyle = hi;
+    ctx.fillRect(0, 0, W, H);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
   }
 
   // ── Walls & Ceiling ───────────────────────────────────────
+  // Walls: cream upper field with quiet damask + warm walnut wainscot
+  // and a crown moulding. Ceiling: pale cream coffered dome with a
+  // central rosette where the chandelier hangs from. Plus a torus
+  // collar around the chandelier rod.
   _buildWallsAndCeiling() {
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0xf0e8d8, roughness: 0.92, side: THREE.BackSide });
+    // Wall texture
+    const wallTex = this._makeHubWallTexture();
+    wallTex.wrapS = THREE.RepeatWrapping;
+    wallTex.wrapT = THREE.ClampToEdgeWrapping;
+    wallTex.repeat.set(8, 1);
+    wallTex.colorSpace = THREE.SRGBColorSpace;
+    const wallMat = new THREE.MeshStandardMaterial({
+      map: wallTex, roughness: 0.85, metalness: 0.05, side: THREE.BackSide,
+    });
     const wall = new THREE.Mesh(new THREE.CylinderGeometry(21, 21, 9, 72, 1, true), wallMat);
     wall.position.y = 4.5; this.scene.add(wall);
 
-    const ceilMat = new THREE.MeshStandardMaterial({ color: 0xfaf4ec, roughness: 0.9 });
+    // Ceiling rosette
+    const ceilTex = this._makeHubCeilingTexture();
+    ceilTex.colorSpace = THREE.SRGBColorSpace;
+    const ceilMat = new THREE.MeshStandardMaterial({
+      map: ceilTex, roughness: 0.88, metalness: 0.05,
+    });
     const ceil = new THREE.Mesh(new THREE.CylinderGeometry(21, 21, 0.4, 72), ceilMat);
     ceil.position.y = 9.2; this.scene.add(ceil);
 
-    const chandMat = new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.8, roughness: 0.2 });
+    // Brass chandelier collar + chains around the central rosette.
+    const chandMat = new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.85, roughness: 0.18 });
     const chand = new THREE.Mesh(new THREE.TorusGeometry(1.2, 0.06, 8, 40), chandMat);
     chand.rotation.x = Math.PI/2; chand.position.y = 8.8; this.scene.add(chand);
     for (let i = 0; i < 8; i++) {
@@ -169,10 +328,170 @@ export class CampusScene {
     }
   }
 
+  // Cream wall: walnut skirting + wainscot panels, gold chair-rail,
+  // upper damask field, warm crown band. Renders to a wide texture
+  // tiled around the cylinder so seams don't repeat too aggressively.
+  _makeHubWallTexture() {
+    const W = 1024, H = 768;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Crown moulding band.
+    ctx.fillStyle = '#3a2418';
+    ctx.fillRect(0, 0, W, H * 0.04);
+    ctx.fillStyle = '#c8a25e';
+    ctx.fillRect(0, H * 0.04, W, H * 0.012);
+
+    // Upper cream field with gentle vertical gradient.
+    const upper = ctx.createLinearGradient(0, H * 0.05, 0, H * 0.62);
+    upper.addColorStop(0, '#f6ecd6');
+    upper.addColorStop(1, '#e6d8b8');
+    ctx.fillStyle = upper;
+    ctx.fillRect(0, H * 0.05, W, H * 0.57);
+
+    // Damask diamonds — soft warm taupe so the wall has rhythm.
+    ctx.strokeStyle = 'rgba(150, 110, 70, 0.14)';
+    ctx.lineWidth = 1.5;
+    const dW = 168, dH = 96;
+    for (let y = H * 0.07; y < H * 0.6; y += dH) {
+      for (let x = -dW / 2; x < W + dW; x += dW) {
+        const off = ((y / dH) | 0) % 2 === 0 ? 0 : dW / 2;
+        ctx.beginPath();
+        ctx.moveTo(x + off,            y + dH / 2);
+        ctx.lineTo(x + off + dW / 2,   y);
+        ctx.lineTo(x + off + dW,       y + dH / 2);
+        ctx.lineTo(x + off + dW / 2,   y + dH);
+        ctx.closePath();
+        ctx.stroke();
+        // Tiny rosette dot inside each diamond.
+        ctx.fillStyle = 'rgba(180, 130, 70, 0.10)';
+        ctx.beginPath();
+        ctx.arc(x + off + dW / 2, y + dH / 2, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Chair rail: dark + gold + dark.
+    ctx.fillStyle = '#2a1810';
+    ctx.fillRect(0, H * 0.62, W, H * 0.012);
+    ctx.fillStyle = '#c8a25e';
+    ctx.fillRect(0, H * 0.632, W, H * 0.014);
+    ctx.fillStyle = '#3a2418';
+    ctx.fillRect(0, H * 0.646, W, H * 0.014);
+
+    // Wainscot — warm walnut panels with vertical seams + frames.
+    const wainscot = ctx.createLinearGradient(0, H * 0.66, 0, H * 0.97);
+    wainscot.addColorStop(0, '#5a3a20');
+    wainscot.addColorStop(1, '#36200e');
+    ctx.fillStyle = wainscot;
+    ctx.fillRect(0, H * 0.66, W, H * 0.31);
+
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.lineWidth = 2;
+    const panels = 8;
+    const pad = 18;
+    for (let i = 0; i < panels; i++) {
+      const px = i * (W / panels) + pad;
+      const pw = W / panels - pad * 2;
+      ctx.strokeRect(px, H * 0.685, pw, H * 0.27);
+    }
+    // Panel highlight bevel
+    ctx.strokeStyle = 'rgba(255, 220, 170, 0.07)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < panels; i++) {
+      const px = i * (W / panels) + pad + 4;
+      const pw = W / panels - pad * 2 - 8;
+      ctx.strokeRect(px, H * 0.685 + 4, pw, H * 0.27 - 8);
+    }
+    // Walnut grain whispers
+    ctx.strokeStyle = 'rgba(255, 220, 170, 0.05)';
+    for (let i = 0; i < 80; i++) {
+      const y = H * 0.66 + Math.random() * H * 0.31;
+      const x = Math.random() * W;
+      const len = 60 + Math.random() * 200;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + len, y + (Math.random() - 0.5) * 4);
+      ctx.stroke();
+    }
+
+    // Skirting board.
+    ctx.fillStyle = '#1a0e06';
+    ctx.fillRect(0, H * 0.97, W, H * 0.03);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // Pale cream coffered dome with a central gold rosette where the
+  // chandelier rod attaches. UV-mapped to the cylinder cap so the
+  // rosette ends up centred above the lobby.
+  _makeHubCeilingTexture() {
+    const W = 1024, H = 1024;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Soft warm cream base, slightly brighter at centre.
+    const base = ctx.createRadialGradient(W/2, H/2, 30, W/2, H/2, W*0.6);
+    base.addColorStop(0, '#fbf5e4');
+    base.addColorStop(1, '#e8dcc0');
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, W, H);
+
+    // Concentric brass rings — three of them — for a layered dome.
+    ctx.strokeStyle = '#c8a25e';
+    ctx.lineWidth = 4;
+    for (const r of [W * 0.18, W * 0.30, W * 0.42]) {
+      ctx.beginPath();
+      ctx.arc(W/2, H/2, r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // Coffered grid only in the OUTER ring so the central area stays
+    // clean for the rosette.
+    ctx.strokeStyle = 'rgba(120, 90, 60, 0.18)';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 24; i++) {
+      const a = (i / 24) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(W/2 + Math.cos(a) * W * 0.42, H/2 + Math.sin(a) * H * 0.42);
+      ctx.lineTo(W/2 + Math.cos(a) * W * 0.49, H/2 + Math.sin(a) * H * 0.49);
+      ctx.stroke();
+    }
+
+    // Central rosette: gold concentric flower with petal arcs.
+    ctx.fillStyle = '#d8b25e';
+    ctx.beginPath(); ctx.arc(W/2, H/2, W * 0.05, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#a87830';
+    ctx.beginPath(); ctx.arc(W/2, H/2, W * 0.025, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#c8a25e';
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      const x1 = W/2 + Math.cos(a) * W * 0.05;
+      const y1 = H/2 + Math.sin(a) * H * 0.05;
+      const x2 = W/2 + Math.cos(a) * W * 0.10;
+      const y2 = H/2 + Math.sin(a) * H * 0.10;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
   // ── Central fountain ──────────────────────────────────────
-  // Tripo-generated marble fountain at the hub centre, surrounded by four
-  // tropical potted plants. A warm pulsing point light remains regardless of
-  // whether the GLB has finished loading so the room is always lit.
+  // Tripo-generated marble fountain at the hub centre, ringed by an
+  // alternating set of marble flower urns and amber-shaded floor
+  // lamps for a warm hotel-lobby feel. A pulsing top light remains
+  // regardless of whether GLBs have loaded so the room is always lit.
   _buildCenterDecor() {
     const fountain = new THREE.Group();
     this.scene.add(fountain);
@@ -189,16 +508,33 @@ export class CampusScene {
       { position: [0, 0, 0], targetSize: 5.0, yAlign: 'bottom' }
     );
 
-    // Four lush potted plants ringing the fountain (cached → 1 fetch).
-    // Radius pushed out so the plants stay clear of the larger fountain base.
-    for (let i = 0; i < 4; i++) {
-      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
-      mountTripoModel(this.scene, 'plant_tropical', {
-        position: [Math.cos(a) * 4.6, 0, Math.sin(a) * 4.6],
-        rotationY: Math.random() * Math.PI * 2,
-        targetSize: 1.0,
-        yAlign: 'bottom',
-      });
+    // Eight evenly-spaced ring slots: alternate marble urn vase and
+    // an art-deco floor lamp. Each lamp carries a small warm point
+    // light so the lobby gets a halo of soft amber light at floor
+    // level — much cosier than the previous flat-lit ring of plants.
+    const RING_R = 5.6;
+    for (let i = 0; i < 8; i++) {
+      const a  = (i / 8) * Math.PI * 2 + Math.PI / 8; // offset so neither
+                                                     // urn nor lamp lines up
+                                                     // with a portal axis
+      const x  = Math.cos(a) * RING_R;
+      const z  = Math.sin(a) * RING_R;
+      const facing = a + Math.PI;     // face inward toward fountain
+      if (i % 2 === 0) {
+        mountTripoModel(this.scene, 'marble_urn_vase', {
+          position: [x, 0, z], rotationY: facing,
+          targetSize: 1.4, yAlign: 'bottom',
+        });
+      } else {
+        mountTripoModel(this.scene, 'art_deco_floor_lamp', {
+          position: [x, 0, z], rotationY: facing,
+          targetSize: 1.9, yAlign: 'bottom',
+        });
+        // Warm bulb glow tucked at lamp-shade height.
+        const bulb = new THREE.PointLight(0xffc880, 0.9, 6.5, 1.7);
+        bulb.position.set(x, 1.6, z);
+        this.scene.add(bulb);
+      }
     }
 
     this._buildCenterChandelier();
@@ -1156,11 +1492,15 @@ export class CampusScene {
   flyHome() {
     // Restore hub camera bounds (we may be returning from an immersive room).
     this.resetCameraBounds();
-    // Keep the home camera INSIDE the room.
-    // Room is a cylinder of radius 21 with ceiling at y≈9.2,
-    // so we place the camera at (0, 6, 16) looking at the central fountain.
-    const p0=this.camera.position.clone(), p1=new THREE.Vector3(0,6,16);
-    const t0=this.controls.target.clone(), t1=new THREE.Vector3(0,1.5,0);
+    // Fly back to the same arrival spot we use on first load
+    // (this.spawnPoint, set in _initCamera) so "go home" and "boot
+    // up" feel like the same homecoming.
+    const sp = this.spawnPoint || new THREE.Vector3(0, 0, 16);
+    const p0=this.camera.position.clone(), p1=new THREE.Vector3(sp.x, 6, sp.z);
+    const t0=this.controls.target.clone(), t1=new THREE.Vector3(0, 1.5, 0);
+    // Also pull the VR rig back to the spawn so a headset user
+    // returning home doesn't end up stuck inside the fountain.
+    this.playerGroup.position.set(sp.x, 0, sp.z);
     let f=0;
     const ease=t=>t<0.5?2*t*t:-1+(4-2*t)*t;
     const fly=()=>{ f++; if(f>60) return; const k=ease(f/60); this.camera.position.lerpVectors(p0,p1,k); this.controls.target.lerpVectors(t0,t1,k); this.controls.update(); requestAnimationFrame(fly); };
