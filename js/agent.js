@@ -25,7 +25,7 @@ const Agent = (() => {
     study: [
       "好嘞，我们拆一下：① 先确认题目要什么，② 找你已经会的部分，③ 再补缺口。你卡在哪一步？\n\nOk let's break it: ① clarify what's asked, ② list what you already know, ③ fill the gap. Where are you stuck?",
       "这个概念其实就一句话——但魔鬼在三个细节里。我先给你那一句话，再一个个挑细节，行不？\n\nThe concept is one sentence with three sneaky details. Want me to give you the sentence first, then unpack the traps?",
-      "我的备考小习惯：先做一份"我已经会的清单"，能直接砍掉三分之一压力。要不要来一份？\n\nMy study trick: write a 'stuff I already know' list first — it cuts a third of the panic. Want to try?",
+      "我的备考小习惯：先做一份「我已经会的清单」，能直接砍掉三分之一压力。要不要来一份？\n\nMy study trick: write a 'stuff I already know' list first — it cuts a third of the panic. Want to try?",
     ],
     leisure: [
       "哇这个我也好喜欢！你那本读到哪儿了？我最近在啃一本超级上头的散文集～\n\nOh I love that one! How far in are you? I'm currently obsessed with an essay collection.",
@@ -38,7 +38,7 @@ const Agent = (() => {
       "如果实在累……\n就让自己安静地坐着。\n书法、茶、窗外的风——都是借口，让你停一下而已。\n\nIf you're tired… just sit. Calligraphy, tea, the breeze — they're all excuses to pause.",
     ],
     games: [
-      "嘿嘿你来啦！按墙上"开始游戏"，咱俩就开战~你执黑先手哦。\n\nHi! Hit START on the wall and we'll battle. You're black, you go first.",
+      "嘿嘿你来啦！按墙上「开始游戏」，咱俩就开战~你执黑先手哦。\n\nHi! Hit START on the wall and we'll battle. You're black, you go first.",
       "这步好棋！等等让我想一下下……👀\n\nSlick move! Hold on, let me think… 👀",
       "嘿嘿不能让你赢的，看童童这一手！\n\nNot letting you win that easy — watch me!",
     ],
