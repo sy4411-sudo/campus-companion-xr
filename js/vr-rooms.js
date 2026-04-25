@@ -1148,29 +1148,29 @@ class LeisureVRRoom extends VRRoom {
     this._buildHomeTheater();
 
     // ── Seating (front-row chairs + back-row recliners) ──────
-    // Tripo loader pre-rotates every GLB by +π/2 around Y so that
-    // wrapper rotationY = 0 → model's rendered front faces -Z. The
-    // rendered "front" of these chair / recliner GLBs is the BACK
-    // (the side a passer-by sees in a furniture-store render), so
-    // rotationY = π flips the cushion to face -Z, i.e. toward the
-    // screen. Sitters then face the screen too. ✓
+    // Project orientation convention (mirrors ChatVRRoom):
+    //   rotationY = 0       → model front faces -Z (toward back wall)
+    //   rotationY = Math.PI → model front faces +Z (toward entrance)
+    // The screen sits on the back wall at z = -7.85, so chairs and
+    // recliners use rotationY = 0 to put cushions and the sitter's
+    // gaze straight at the screen.
     const frontZ = 2.0;
     const seatXs = [-3.2, -1.6, 0, 1.6, 3.2];
     for (const sx of seatXs) {
       mountTripoModel(this.group, 'cinema_seat_red', {
         position: [sx, 0, frontZ],
-        rotationY: Math.PI,
+        rotationY: 0,
         targetSize: 0.95,
         yAlign: 'bottom',
       });
     }
     const backZ = 4.6;
     mountTripoModel(this.group, 'recliner_loveseat', {
-      position: [-2.0, 0, backZ], rotationY: Math.PI,
+      position: [-2.0, 0, backZ], rotationY: 0,
       targetSize: 1.7, yAlign: 'bottom',
     });
     mountTripoModel(this.group, 'recliner_loveseat', {
-      position: [ 2.0, 0, backZ], rotationY: Math.PI,
+      position: [ 2.0, 0, backZ], rotationY: 0,
       targetSize: 1.7, yAlign: 'bottom',
     });
 
