@@ -221,7 +221,7 @@ class ChatVRRoom extends VRRoom {
     // rotationY = -π/2    → 物体正面朝 +X（朝向右侧）
     // rotationY = +π/2    → 物体正面朝 -X（朝向左侧）
     //
-    // ����家从 z=+9 入场��朝 -Z 走。所以��望玩家看到正面的物件用 π，
+    // ����家从 z=+9 入场���朝 -Z 走。所以��望玩家看到正面的物件用 π，
     // 朝向沙发/壁炉那侧（-Z）的物件用 0。
 
     // ── 地毯（用 PlaneGeometry + Canvas 纹理，确保完全平铺地面）─
@@ -616,7 +616,7 @@ class ChatVRRoom extends VRRoom {
     return new THREE.CanvasTexture(c);
   }
 
-  // ── 火焰 / 落地灯 flicker ───────���─────────────────────
+  // ── 火焰 / 落地灯 flicker ──────������─────────────────────
   update(delta, camWorld) {
     super.update(delta, camWorld);
     const t = performance.now() * 0.001;
@@ -1157,7 +1157,10 @@ class GamesVRRoom extends VRRoom {
 
   build() {
     this._buildRoom(16, 16, 5, 0x4A4A6A, 0xFFF0E0);
-    this._buildAICompanion(2, 0.5, 1, 0xE8D090);
+    // Vivid teal-cyan: complementary to the warm tatami-yellow Go board
+    // (#E9C28B → #C99A5B) for the highest contrast against the floor,
+    // and distinct from the other four zones' companions.
+    this._buildAICompanion(2, 0.5, 1, 0x2EC4D8);
     this._buildExitDoor(0, 0, 7);
     
     // Colorful party lighting
