@@ -1,63 +1,67 @@
 // ============================================================
-//  Home Theater overlay — direct-mp4 player for the lounge.
+//  Home Theater — dual-channel video for the lounge.
 //
-//  WHY THIS FILE LOOKS DIFFERENT FROM THE ORIGINAL IFRAME VERSION
-//  ────────────────────────────────────────────────────────────
-//  In immersive VR the browser composites only the WebGL frame to
-//  the headset, so DOM <iframe> embeds (Bilibili / YouTube) become
-//  invisible. To make video actually play *on the 3D screen* in VR
-//  we need a `THREE.VideoTexture` — and that requires a same-origin
-//  (or CORS-enabled) `<video>` element.
+//  TWO PATHS, ONE UI:
+//    1. SCREEN_CLIPS — direct mp4 sources (Google Drive uploads,
+//       same-origin Vercel Blob, etc.). Played through ONE shared
+//       <video crossorigin="anonymous"> element so vr-rooms.js can
+//       wrap it in a THREE.VideoTexture and render the video on the
+//       3D cinema screen — works in immersive VR too, where DOM
+//       iframes are invisible.
+//    2. EXTERNAL_LINKS — Bilibili clips, YouTube clips, and the
+//       site front pages. Each opens in a popup window via
+//       window.open() because VR headsets cannot composite DOM
+//       iframes onto the WebGL canvas, and YouTube/Bilibili refuse
+//       direct mp4 access for licensing reasons.
 //
-//  This module:
-//    • owns ONE shared `<video crossorigin="anonymous">` element,
-//      kept in document.body forever (re-parented between an
-//      offscreen wrapper and the overlay's stage so its frames
-//      never stop being available to VideoTexture);
-//    • exposes the element as `HomeTheater.video` so vr-rooms.js
-//      can wrap it in a VideoTexture and paint the floor cinema
-//      screen with the live video;
-//    • fires `ht:load` / `ht:play` / `ht:pause` window events so
-//      other systems can react;
-//    • drives a curated playlist plus a "paste any mp4 URL" input.
-//
-//  YouTube / Bilibili streams cannot be programmatically extracted
-//  from a v0 sandbox (ToS + signed URLs), so the items below ship
-//  with public-domain CC mp4s as PLACEHOLDERS. Replace each `src`
-//  with your own mp4 URL (Vercel Blob recommended) when you have
-//  the real clip files.
+//  Public API exposed on window.HomeTheater:
+//    • video                 — shared HTMLVideoElement (for VideoTexture)
+//    • open()/close()/toggle() — overlay panel
+//    • playIndex(i)          — loads SCREEN_CLIPS[i] and plays it
+//    • next()/prev()/togglePlay() — drive the on-screen player
+//    • isReady()             — true once a clip has been loaded
 // ============================================================
 const HomeTheater = (() => {
-  // ── Curated playlist ─────────────────────────────────────
-  // Each entry: { title, src }. `src` MUST be a direct mp4/webm
-  // URL on a same-origin host or one that returns CORS headers
-  // (Access-Control-Allow-Origin) so VideoTexture works in VR.
-  // Titles preserved from the user's request; sources are
-  // CC-licensed Google sample mp4s used as placeholders.
-  const FEATURED = {
-    bilibili: [
-      { title: '《天空之城》剪辑 · Castle in the Sky',
-        src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4' },
-      { title: '《心灵捕手》剪辑 · Good Will Hunting',
-        src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4' },
-      { title: '《绿皮书》剪辑 · Green Book',
-        src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4' },
-    ],
-    youtube: [
-      { title: 'Paddington · clip',
-        src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4' },
-      { title: 'Eternal Sunshine of the Spotless Mind · clip',
-        src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4' },
-      { title: 'About Time · clip',
-        src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4' },
-    ],
-  };
+  // ── On-screen clips (mp4 direct links, play in 3D screen) ─
+  // Google Drive sharing links are converted to direct-download
+  // form `uc?export=download&id=FILE_ID`. If the browser refuses
+  // the CORS preflight needed for VideoTexture, we automatically
+  // fall back to opening Drive's /preview page in a popup so the
+  // user still gets to watch the clip.
+  const SCREEN_CLIPS = [
+    {
+      title: '《天空之城》剪辑 · Castle in the Sky',
+      src: 'https://drive.google.com/uc?export=download&id=1nnOb541EaREf6KtEWDXO5_D7cAu76Quj',
+      fallback: 'https://drive.google.com/file/d/1nnOb541EaREf6KtEWDXO5_D7cAu76Quj/preview',
+    },
+    {
+      title: '《心灵捕手》剪辑 · Good Will Hunting',
+      src: 'https://drive.google.com/uc?export=download&id=107Y1T8QiExo85yT0B4RarPRBqd-dTy87',
+      fallback: 'https://drive.google.com/file/d/107Y1T8QiExo85yT0B4RarPRBqd-dTy87/preview',
+    },
+    {
+      title: '《绿皮书》剪辑 · Green Book',
+      src: 'https://drive.google.com/uc?export=download&id=1GPIVLY5EHqzOs4ZftdXvnWhvOkbbUdFc',
+      fallback: 'https://drive.google.com/file/d/1GPIVLY5EHqzOs4ZftdXvnWhvOkbbUdFc/preview',
+    },
+  ];
 
-  // Flat playlist + index (used by next/prev buttons in the 3D scene).
-  const PLAYLIST = [...FEATURED.bilibili, ...FEATURED.youtube];
+  // ── External links (open as popup window, never on the 3D screen) ─
+  const EXTERNAL_LINKS = [
+    { title: 'Paddington · clip',                            url: 'https://www.youtube.com/watch?v=EoRYe17lAQ8' },
+    { title: 'Eternal Sunshine of the Spotless Mind · clip', url: 'https://www.youtube.com/watch?v=hZdl2FFp0eA' },
+    { title: 'About Time · clip',                            url: 'https://www.youtube.com/watch?v=dgMKzky9S4I' },
+    { title: 'Bilibili · 主站',                               url: 'https://www.bilibili.com/' },
+    { title: 'YouTube · main site',                           url: 'https://www.youtube.com/' },
+  ];
+
   let currentIndex = -1;
 
   // ── Shared <video> element (built once, lives forever) ───
+  // It floats in an off-screen wrapper most of the time so the
+  // browser keeps decoding frames for the VideoTexture even when
+  // the overlay is closed. While the overlay is open we re-parent
+  // the SAME element into the stage div so the user can scrub.
   const offscreen = document.createElement('div');
   offscreen.style.cssText = [
     'position:fixed', 'left:-99999px', 'top:0',
@@ -87,9 +91,20 @@ const HomeTheater = (() => {
   video.addEventListener('pause', () => window.dispatchEvent(new CustomEvent('ht:pause')));
   video.addEventListener('ended', () => next());
 
+  // CORS / network fallback — if the Drive direct URL refuses to
+  // play (CORS preflight failure, virus-scan redirect, 403, etc.),
+  // open the Drive `/preview` page in a new tab so the user can
+  // still watch the clip.
+  video.addEventListener('error', () => {
+    const it = SCREEN_CLIPS[currentIndex];
+    if (it?.fallback) {
+      console.warn('[HomeTheater] direct mp4 load failed, opening fallback popup:', it.fallback);
+      _popup(it.fallback);
+    }
+  });
+
   // ── Overlay DOM (lazy) ───────────────────────────────────
-  let root = null, tabBili, tabYT, urlInput, titleEl, listEl, frameWrap;
-  let currentTab = 'bilibili';
+  let root = null, titleEl, frameWrap, screenListEl, externalListEl;
   let isOpen = false;
 
   function build() {
@@ -100,21 +115,15 @@ const HomeTheater = (() => {
       <div class="ht-backdrop"></div>
       <div class="ht-window" role="dialog" aria-label="Home Theater">
         <header class="ht-header">
-          <div class="ht-tabs">
-            <button class="ht-tab" data-tab="bilibili">B 站</button>
-            <button class="ht-tab" data-tab="youtube">YouTube</button>
-          </div>
-          <div class="ht-search">
-            <input type="text" class="ht-input"
-              placeholder="Paste a direct .mp4 / .webm URL · 粘贴 mp4 直链" />
-            <button class="ht-go">Play</button>
-          </div>
+          <div class="ht-header-title">Home Theater · 家庭影院</div>
           <button class="ht-close" aria-label="Close">×</button>
         </header>
         <main class="ht-main">
           <aside class="ht-side">
-            <div class="ht-side-head">Featured · 推荐</div>
-            <div class="ht-list"></div>
+            <div class="ht-side-head">在影院屏幕上播放 · On the screen</div>
+            <div class="ht-list" data-list="screen"></div>
+            <div class="ht-side-head ht-side-head-2">外部链接 · External (popup)</div>
+            <div class="ht-list" data-list="external"></div>
           </aside>
           <section class="ht-stage">
             <div class="ht-title">Home Theater · 家庭影院</div>
@@ -125,75 +134,71 @@ const HomeTheater = (() => {
     `;
     document.body.appendChild(root);
 
-    tabBili   = root.querySelector('.ht-tab[data-tab="bilibili"]');
-    tabYT     = root.querySelector('.ht-tab[data-tab="youtube"]');
-    urlInput  = root.querySelector('.ht-input');
-    titleEl   = root.querySelector('.ht-title');
-    listEl    = root.querySelector('.ht-list');
-    frameWrap = root.querySelector('.ht-frame-wrap');
+    titleEl         = root.querySelector('.ht-title');
+    frameWrap       = root.querySelector('.ht-frame-wrap');
+    screenListEl    = root.querySelector('.ht-list[data-list="screen"]');
+    externalListEl  = root.querySelector('.ht-list[data-list="external"]');
 
     root.querySelector('.ht-backdrop').addEventListener('click', close);
     root.querySelector('.ht-close').addEventListener('click', close);
-    tabBili.addEventListener('click', () => { currentTab = 'bilibili'; syncTabs(); });
-    tabYT.addEventListener('click', () => { currentTab = 'youtube'; syncTabs(); });
-    root.querySelector('.ht-go').addEventListener('click', onSearch);
-    urlInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); onSearch(); }
-    });
     document.addEventListener('keydown', _onDocKey);
 
-    syncTabs();
+    // Build the lists once — both sets are static.
+    SCREEN_CLIPS.forEach((it, idx) => {
+      const btn = document.createElement('button');
+      btn.className = 'ht-channel';
+      btn.textContent = it.title;
+      btn.addEventListener('click', () => playIndex(idx));
+      screenListEl.appendChild(btn);
+    });
+    EXTERNAL_LINKS.forEach((it) => {
+      const btn = document.createElement('a');
+      btn.className = 'ht-channel ht-channel-link';
+      btn.textContent = it.title;
+      btn.href = it.url;
+      btn.target = '_blank';
+      btn.rel = 'noopener noreferrer';
+      btn.addEventListener('click', (e) => {
+        // Use _popup so we can size the window like a video popup.
+        e.preventDefault();
+        _popup(it.url);
+      });
+      externalListEl.appendChild(btn);
+    });
   }
 
   function _onDocKey(e) { if (isOpen && e.key === 'Escape') close(); }
 
-  function rebuildList() {
-    listEl.innerHTML = '';
-    for (const it of FEATURED[currentTab] || []) {
-      const btn = document.createElement('button');
-      btn.className = 'ht-channel';
-      btn.textContent = it.title;
-      btn.addEventListener('click', () => {
-        const idx = PLAYLIST.findIndex(p => p.src === it.src && p.title === it.title);
-        playIndex(idx >= 0 ? idx : 0);
-      });
-      listEl.appendChild(btn);
-    }
+  function _popup(url) {
+    // Sized to look like a typical video popup; falls back to a new
+    // tab if the browser blocks the popup geometry (e.g. mobile).
+    const w = Math.min(1280, Math.round(window.innerWidth  * 0.85));
+    const h = Math.min(800,  Math.round(window.innerHeight * 0.85));
+    const left = Math.round((window.screen.availWidth  - w) / 2);
+    const top  = Math.round((window.screen.availHeight - h) / 2);
+    const features = `noopener,noreferrer,width=${w},height=${h},left=${left},top=${top}`;
+    const win = window.open(url, '_blank', features);
+    if (!win) window.open(url, '_blank', 'noopener,noreferrer');
   }
 
-  function syncTabs() {
-    if (!tabBili || !tabYT) return;
-    tabBili.classList.toggle('active', currentTab === 'bilibili');
-    tabYT.classList.toggle('active', currentTab === 'youtube');
-    rebuildList();
-  }
-
-  function onSearch() {
-    const v = urlInput.value.trim();
-    if (!v) return;
-    // Treat any pasted text as a direct media URL.
-    loadSrc(v, v);
-    urlInput.value = '';
-  }
-
-  // ── Playback API ─────────────────────────────────────────
+  // ── Playback API (drives the on-screen <video>) ──────────
   function loadSrc(src, title) {
     if (!src) return;
     if (video.src !== src) {
       video.src = src;
       video.load();
     }
-    titleEl && (titleEl.textContent = title || src);
+    if (titleEl) titleEl.textContent = title || src;
     window.dispatchEvent(new CustomEvent('ht:load', { detail: { src, title } }));
-    // Best-effort autoplay; browsers may require user-gesture for the
-    // first call, but the click that triggered playIndex *is* a gesture.
+    // Best-effort autoplay; the click that triggered playIndex is a
+    // user gesture so most browsers will allow audible playback.
     video.play().catch(() => {});
   }
 
   function playIndex(i) {
-    if (!PLAYLIST.length) return;
-    currentIndex = ((i % PLAYLIST.length) + PLAYLIST.length) % PLAYLIST.length;
-    const it = PLAYLIST[currentIndex];
+    if (!SCREEN_CLIPS.length) return;
+    currentIndex = ((i % SCREEN_CLIPS.length) + SCREEN_CLIPS.length) % SCREEN_CLIPS.length;
+    const it = SCREEN_CLIPS[currentIndex];
     loadSrc(it.src, it.title);
   }
 
@@ -211,24 +216,18 @@ const HomeTheater = (() => {
   // ── Overlay open/close (re-parents the shared <video>) ──
   function open() {
     build();
-    // Move the video element from the offscreen wrapper into the
-    // overlay's stage so the user can see + scrub it while open.
     frameWrap.appendChild(video);
     root.classList.add('open');
     isOpen = true;
-    setTimeout(() => urlInput?.focus(), 60);
   }
 
   function close() {
     if (!root) return;
     root.classList.remove('open');
     isOpen = false;
-    // Pull the element back to the offscreen wrapper so its frames
-    // stay available for VideoTexture, but no longer compete with
-    // the WebGL canvas for layout.
     if (video.parentNode !== offscreen) offscreen.appendChild(video);
-    // Note: we deliberately DON'T clear video.src or pause here —
-    // closing the overlay should leave the 3D screen still playing.
+    // Note: we deliberately DON'T pause / clear video.src here —
+    // closing the panel should leave the 3D screen still playing.
   }
 
   function toggle() { isOpen ? close() : open(); }
@@ -239,7 +238,8 @@ const HomeTheater = (() => {
     next, prev, togglePlay, playIndex,
     isReady,
     get currentIndex() { return currentIndex; },
-    get playlist() { return PLAYLIST; },
+    get screenClips() { return SCREEN_CLIPS; },
+    get externalLinks() { return EXTERNAL_LINKS; },
   };
 })();
 

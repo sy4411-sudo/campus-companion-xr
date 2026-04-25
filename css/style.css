@@ -328,44 +328,18 @@ html, body { width:100%; height:100%; overflow:hidden; background:#120e0a; font-
   border-bottom: 1px solid rgba(255,255,255,.06);
 }
 
-#home-theater-overlay .ht-tabs {
-  display: flex; gap: .35rem;
-  background: rgba(255,255,255,.04);
-  padding: .25rem;
-  border-radius: 999px;
-}
-#home-theater-overlay .ht-tab {
-  background: transparent; border: 0; color: #b9b3cf;
-  padding: .45rem 1rem; border-radius: 999px;
-  font-size: .9rem; font-weight: 600; cursor: pointer;
-  transition: background .18s ease, color .18s ease;
-}
-#home-theater-overlay .ht-tab:hover { color: #fff; }
-#home-theater-overlay .ht-tab.active {
-  background: linear-gradient(135deg,#6c7bff,#8d6cff);
-  color: #fff;
-  box-shadow: 0 4px 14px rgba(108,123,255,.4);
+/* Header title (replaces tabs/search bar) */
+#home-theater-overlay .ht-header-title {
+  flex: 1;
+  font-size: 1rem; font-weight: 700;
+  color: #f1ecff;
+  letter-spacing: .02em;
 }
 
-#home-theater-overlay .ht-search {
-  flex: 1; display: flex; gap: .4rem; align-items: center;
-}
-#home-theater-overlay .ht-input {
-  flex: 1;
-  background: rgba(255,255,255,.06);
-  border: 1px solid rgba(255,255,255,.08);
-  border-radius: 10px;
-  color: #f1ecff;
-  padding: .55rem .9rem;
-  font-size: .9rem;
-  outline: none;
-  transition: border-color .18s ease, background .18s ease;
-}
-#home-theater-overlay .ht-input:focus {
-  border-color: rgba(108,123,255,.55);
-  background: rgba(255,255,255,.08);
-}
-#home-theater-overlay .ht-input::placeholder { color: #7a7595; }
+/* Second list-group head sits a bit lower than the first */
+#home-theater-overlay .ht-side-head-2 { margin-top: .9rem; }
+
+/* (kept for legacy markup; harmless if unused) */
 #home-theater-overlay .ht-go {
   background: linear-gradient(135deg,#6c7bff,#8d6cff);
   border: 0; color: #fff;
