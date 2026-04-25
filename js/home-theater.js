@@ -1,142 +1,97 @@
 // ============================================================
-//  Home Theater overlay — Bilibili / YouTube embed in lounge.
+//  Home Theater overlay — direct-mp4 player for the lounge.
 //
-//  The leisure room's big screen is replaced with a clickable
-//  surface that opens this overlay. We can't iframe Bilibili or
-//  YouTube *homepages* (X-Frame-Options blocks them), so the UX is:
+//  WHY THIS FILE LOOKS DIFFERENT FROM THE ORIGINAL IFRAME VERSION
+//  ────────────────────────────────────────────────────────────
+//  In immersive VR the browser composites only the WebGL frame to
+//  the headset, so DOM <iframe> embeds (Bilibili / YouTube) become
+//  invisible. To make video actually play *on the 3D screen* in VR
+//  we need a `THREE.VideoTexture` — and that requires a same-origin
+//  (or CORS-enabled) `<video>` element.
 //
-//    • Two tabs (Bilibili / YouTube) with a curated "channel" list
-//      whose items embed via the official player iframe URLs.
-//    • A URL / ID input that parses pasted links and updates the
-//      iframe src in-place.
-//    • An "Open homepage in new tab" shortcut for unrestricted
-//      browsing (since the homepage itself can't be iframed).
+//  This module:
+//    • owns ONE shared `<video crossorigin="anonymous">` element,
+//      kept in document.body forever (re-parented between an
+//      offscreen wrapper and the overlay's stage so its frames
+//      never stop being available to VideoTexture);
+//    • exposes the element as `HomeTheater.video` so vr-rooms.js
+//      can wrap it in a VideoTexture and paint the floor cinema
+//      screen with the live video;
+//    • fires `ht:load` / `ht:play` / `ht:pause` window events so
+//      other systems can react;
+//    • drives a curated playlist plus a "paste any mp4 URL" input.
 //
-//  Exposed as a classic script for parity with chat.js / voice.js.
-//  Pattern: one IIFE, then `window.HomeTheater = …`.
+//  YouTube / Bilibili streams cannot be programmatically extracted
+//  from a v0 sandbox (ToS + signed URLs), so the items below ship
+//  with public-domain CC mp4s as PLACEHOLDERS. Replace each `src`
+//  with your own mp4 URL (Vercel Blob recommended) when you have
+//  the real clip files.
 // ============================================================
 const HomeTheater = (() => {
+  // ── Curated playlist ─────────────────────────────────────
+  // Each entry: { title, src }. `src` MUST be a direct mp4/webm
+  // URL on a same-origin host or one that returns CORS headers
+  // (Access-Control-Allow-Origin) so VideoTexture works in VR.
+  // Titles preserved from the user's request; sources are
+  // CC-licensed Google sample mp4s used as placeholders.
   const FEATURED = {
     bilibili: [
-      // Curated film clips — relaxing / 治愈 vibes.
-      { title: '《天空之城》剪辑 · Castle in the Sky',         bvid: 'BV1G64y1q7DZ' },
-      { title: '《心灵捕手》剪辑 · Good Will Hunting',         bvid: 'BV1n44y1S7Zy' },
-      { title: '《绿皮书》剪辑 · Green Book',                  bvid: 'BV1wG41147i7' },
+      { title: '《天空之城》剪辑 · Castle in the Sky',
+        src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4' },
+      { title: '《心灵捕手》剪辑 · Good Will Hunting',
+        src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4' },
+      { title: '《绿皮书》剪辑 · Green Book',
+        src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4' },
     ],
     youtube: [
-      { title: 'Paddington · clip',                                    vid: 'EoRYe17lAQ8' },
-      { title: 'Eternal Sunshine of the Spotless Mind · clip',         vid: 'hZdl2FFp0eA' },
-      { title: 'About Time · clip',                                    vid: 'dgMKzky9S4I' },
+      { title: 'Paddington · clip',
+        src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4' },
+      { title: 'Eternal Sunshine of the Spotless Mind · clip',
+        src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4' },
+      { title: 'About Time · clip',
+        src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4' },
     ],
   };
 
-  let root = null;        // overlay container (lazy-built)
-  let frame = null;       // iframe element
-  let tabBili = null;
-  let tabYT = null;
-  let urlInput = null;
-  let titleEl = null;
-  let listEl = null;
+  // Flat playlist + index (used by next/prev buttons in the 3D scene).
+  const PLAYLIST = [...FEATURED.bilibili, ...FEATURED.youtube];
+  let currentIndex = -1;
+
+  // ── Shared <video> element (built once, lives forever) ───
+  const offscreen = document.createElement('div');
+  offscreen.style.cssText = [
+    'position:fixed', 'left:-99999px', 'top:0',
+    'width:1px', 'height:1px',
+    'overflow:hidden', 'pointer-events:none',
+  ].join(';');
+
+  const video = document.createElement('video');
+  video.crossOrigin = 'anonymous';
+  video.playsInline = true;
+  video.preload = 'metadata';
+  video.controls = true;     // matters only when parented inside the overlay
+  video.style.cssText = 'width:100%;height:100%;background:#000;';
+  offscreen.appendChild(video);
+
+  // Append once the document is ready so it always exists.
+  function _attachOffscreen() {
+    if (!offscreen.parentNode) document.body.appendChild(offscreen);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _attachOffscreen, { once: true });
+  } else {
+    _attachOffscreen();
+  }
+
+  video.addEventListener('play',  () => window.dispatchEvent(new CustomEvent('ht:play')));
+  video.addEventListener('pause', () => window.dispatchEvent(new CustomEvent('ht:pause')));
+  video.addEventListener('ended', () => next());
+
+  // ── Overlay DOM (lazy) ───────────────────────────────────
+  let root = null, tabBili, tabYT, urlInput, titleEl, listEl, frameWrap;
   let currentTab = 'bilibili';
   let isOpen = false;
 
-  // ── URL / ID parsing ─────────────────────────────────────
-  function extractBvid(input) {
-    if (!input) return null;
-    const trimmed = input.trim();
-    // Direct BVID (case-sensitive prefix "BV").
-    const direct = trimmed.match(/(BV[0-9A-Za-z]{10})/);
-    if (direct) return direct[1];
-    // bilibili.com/video/BVxxxxxxxxxx[/...]
-    const url = trimmed.match(/bilibili\.com\/video\/(BV[0-9A-Za-z]{10})/);
-    return url ? url[1] : null;
-  }
-
-  function extractYouTubeId(input) {
-    if (!input) return null;
-    const trimmed = input.trim();
-    // Direct 11-char id.
-    if (/^[A-Za-z0-9_-]{11}$/.test(trimmed)) return trimmed;
-    // youtu.be/ID
-    const short = trimmed.match(/youtu\.be\/([A-Za-z0-9_-]{11})/);
-    if (short) return short[1];
-    // youtube.com/watch?v=ID  (or  &v=ID anywhere)
-    const watch = trimmed.match(/[?&]v=([A-Za-z0-9_-]{11})/);
-    if (watch) return watch[1];
-    // youtube.com/embed/ID
-    const embed = trimmed.match(/youtube\.com\/embed\/([A-Za-z0-9_-]{11})/);
-    return embed ? embed[1] : null;
-  }
-
-  // ── Iframe helpers ───────────────────────────────────────
-  function loadBilibili(bvid, title) {
-    const src = `https://player.bilibili.com/player.html?bvid=${encodeURIComponent(bvid)}&autoplay=0&danmaku=0&high_quality=1`;
-    frame.src = src;
-    titleEl.textContent = title || `Bilibili · ${bvid}`;
-    currentTab = 'bilibili';
-    syncTabs();
-  }
-  function loadYouTube(vid, title) {
-    const src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(vid)}?rel=0&modestbranding=1`;
-    frame.src = src;
-    titleEl.textContent = title || `YouTube · ${vid}`;
-    currentTab = 'youtube';
-    syncTabs();
-  }
-
-  // ── Build curated list for the active tab. ───────────────
-  function rebuildList() {
-    listEl.innerHTML = '';
-    const items = FEATURED[currentTab] || [];
-    for (const it of items) {
-      const btn = document.createElement('button');
-      btn.className = 'ht-channel';
-      btn.textContent = it.title;
-      btn.addEventListener('click', () => {
-        if (currentTab === 'bilibili') loadBilibili(it.bvid, it.title);
-        else loadYouTube(it.vid, it.title);
-      });
-      listEl.appendChild(btn);
-    }
-    // Tail "Open homepage" shortcut — unrestricted external link.
-    const home = document.createElement('a');
-    home.className = 'ht-channel ht-channel-link';
-    home.target = '_blank';
-    home.rel = 'noopener noreferrer';
-    home.href = currentTab === 'bilibili' ? 'https://www.bilibili.com/' : 'https://www.youtube.com/';
-    home.textContent = currentTab === 'bilibili'
-      ? 'Open Bilibili homepage in new tab ↗'
-      : 'Open YouTube homepage in new tab ↗';
-    listEl.appendChild(home);
-  }
-
-  function syncTabs() {
-    if (!tabBili || !tabYT) return;
-    tabBili.classList.toggle('active', currentTab === 'bilibili');
-    tabYT.classList.toggle('active', currentTab === 'youtube');
-    rebuildList();
-  }
-
-  // ── Search / paste handler ───────────────────────────────
-  function onSearch() {
-    const v = urlInput.value;
-    if (!v) return;
-    // Try to detect the source from the input itself first so users
-    // can paste a link from either site without changing tabs.
-    const ytId = extractYouTubeId(v);
-    if (ytId) { loadYouTube(ytId, 'YouTube · ' + ytId); urlInput.value = ''; return; }
-    const bv = extractBvid(v);
-    if (bv) { loadBilibili(bv, 'Bilibili · ' + bv); urlInput.value = ''; return; }
-    // Fallback — open a search results page in a new tab since the
-    // search UI itself isn't iframe-friendly.
-    const q = encodeURIComponent(v);
-    const url = currentTab === 'bilibili'
-      ? `https://search.bilibili.com/all?keyword=${q}`
-      : `https://www.youtube.com/results?search_query=${q}`;
-    window.open(url, '_blank', 'noopener,noreferrer');
-  }
-
-  // ── Build overlay DOM (lazy) ─────────────────────────────
   function build() {
     if (root) return;
     root = document.createElement('div');
@@ -146,12 +101,12 @@ const HomeTheater = (() => {
       <div class="ht-window" role="dialog" aria-label="Home Theater">
         <header class="ht-header">
           <div class="ht-tabs">
-            <button class="ht-tab" data-tab="bilibili">Bilibili</button>
+            <button class="ht-tab" data-tab="bilibili">B 站</button>
             <button class="ht-tab" data-tab="youtube">YouTube</button>
           </div>
           <div class="ht-search">
             <input type="text" class="ht-input"
-              placeholder="Paste BV / YouTube link or ID · 粘贴链接或编号" />
+              placeholder="Paste a direct .mp4 / .webm URL · 粘贴 mp4 直链" />
             <button class="ht-go">Play</button>
           </div>
           <button class="ht-close" aria-label="Close">×</button>
@@ -163,28 +118,20 @@ const HomeTheater = (() => {
           </aside>
           <section class="ht-stage">
             <div class="ht-title">Home Theater · 家庭影院</div>
-            <div class="ht-frame-wrap">
-              <iframe class="ht-frame"
-                allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
-                allowfullscreen
-                referrerpolicy="no-referrer-when-downgrade"
-                sandbox="allow-scripts allow-same-origin allow-presentation allow-popups allow-forms"></iframe>
-            </div>
+            <div class="ht-frame-wrap"></div>
           </section>
         </main>
       </div>
     `;
     document.body.appendChild(root);
 
-    // Wire references
-    frame    = root.querySelector('.ht-frame');
-    tabBili  = root.querySelector('.ht-tab[data-tab="bilibili"]');
-    tabYT    = root.querySelector('.ht-tab[data-tab="youtube"]');
-    urlInput = root.querySelector('.ht-input');
-    titleEl  = root.querySelector('.ht-title');
-    listEl   = root.querySelector('.ht-list');
+    tabBili   = root.querySelector('.ht-tab[data-tab="bilibili"]');
+    tabYT     = root.querySelector('.ht-tab[data-tab="youtube"]');
+    urlInput  = root.querySelector('.ht-input');
+    titleEl   = root.querySelector('.ht-title');
+    listEl    = root.querySelector('.ht-list');
+    frameWrap = root.querySelector('.ht-frame-wrap');
 
-    // Events
     root.querySelector('.ht-backdrop').addEventListener('click', close);
     root.querySelector('.ht-close').addEventListener('click', close);
     tabBili.addEventListener('click', () => { currentTab = 'bilibili'; syncTabs(); });
@@ -193,27 +140,82 @@ const HomeTheater = (() => {
     urlInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); onSearch(); }
     });
-
-    // Esc to close
-    root.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
     document.addEventListener('keydown', _onDocKey);
 
     syncTabs();
-    // Default first item of the first tab.
-    const first = FEATURED.bilibili[0];
-    loadBilibili(first.bvid, first.title);
   }
 
-  function _onDocKey(e) {
-    if (isOpen && e.key === 'Escape') close();
+  function _onDocKey(e) { if (isOpen && e.key === 'Escape') close(); }
+
+  function rebuildList() {
+    listEl.innerHTML = '';
+    for (const it of FEATURED[currentTab] || []) {
+      const btn = document.createElement('button');
+      btn.className = 'ht-channel';
+      btn.textContent = it.title;
+      btn.addEventListener('click', () => {
+        const idx = PLAYLIST.findIndex(p => p.src === it.src && p.title === it.title);
+        playIndex(idx >= 0 ? idx : 0);
+      });
+      listEl.appendChild(btn);
+    }
   }
 
-  // ── Public API ───────────────────────────────────────────
+  function syncTabs() {
+    if (!tabBili || !tabYT) return;
+    tabBili.classList.toggle('active', currentTab === 'bilibili');
+    tabYT.classList.toggle('active', currentTab === 'youtube');
+    rebuildList();
+  }
+
+  function onSearch() {
+    const v = urlInput.value.trim();
+    if (!v) return;
+    // Treat any pasted text as a direct media URL.
+    loadSrc(v, v);
+    urlInput.value = '';
+  }
+
+  // ── Playback API ─────────────────────────────────────────
+  function loadSrc(src, title) {
+    if (!src) return;
+    if (video.src !== src) {
+      video.src = src;
+      video.load();
+    }
+    titleEl && (titleEl.textContent = title || src);
+    window.dispatchEvent(new CustomEvent('ht:load', { detail: { src, title } }));
+    // Best-effort autoplay; browsers may require user-gesture for the
+    // first call, but the click that triggered playIndex *is* a gesture.
+    video.play().catch(() => {});
+  }
+
+  function playIndex(i) {
+    if (!PLAYLIST.length) return;
+    currentIndex = ((i % PLAYLIST.length) + PLAYLIST.length) % PLAYLIST.length;
+    const it = PLAYLIST[currentIndex];
+    loadSrc(it.src, it.title);
+  }
+
+  function next() { playIndex(currentIndex < 0 ? 0 : currentIndex + 1); }
+  function prev() { playIndex(currentIndex < 0 ? 0 : currentIndex - 1); }
+
+  function togglePlay() {
+    if (currentIndex < 0) { playIndex(0); return; }
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+  }
+
+  function isReady() { return currentIndex >= 0 && !!video.src; }
+
+  // ── Overlay open/close (re-parents the shared <video>) ──
   function open() {
     build();
+    // Move the video element from the offscreen wrapper into the
+    // overlay's stage so the user can see + scrub it while open.
+    frameWrap.appendChild(video);
     root.classList.add('open');
     isOpen = true;
-    // Focus the input so users can paste immediately.
     setTimeout(() => urlInput?.focus(), 60);
   }
 
@@ -221,14 +223,24 @@ const HomeTheater = (() => {
     if (!root) return;
     root.classList.remove('open');
     isOpen = false;
-    // Stop playback by clearing the iframe src. Without this, audio
-    // keeps playing in the background after the overlay is hidden.
-    if (frame) frame.src = 'about:blank';
+    // Pull the element back to the offscreen wrapper so its frames
+    // stay available for VideoTexture, but no longer compete with
+    // the WebGL canvas for layout.
+    if (video.parentNode !== offscreen) offscreen.appendChild(video);
+    // Note: we deliberately DON'T clear video.src or pause here —
+    // closing the overlay should leave the 3D screen still playing.
   }
 
   function toggle() { isOpen ? close() : open(); }
 
-  return { open, close, toggle };
+  return {
+    video,                  // the live HTMLVideoElement (for VideoTexture)
+    open, close, toggle,
+    next, prev, togglePlay, playIndex,
+    isReady,
+    get currentIndex() { return currentIndex; },
+    get playlist() { return PLAYLIST; },
+  };
 })();
 
 if (typeof window !== 'undefined') window.HomeTheater = HomeTheater;

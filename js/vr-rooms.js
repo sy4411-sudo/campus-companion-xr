@@ -1083,14 +1083,18 @@ class LeisureVRRoom extends VRRoom {
     frame.position.set(0, screenY, wallZ + 0.06);
     this.group.add(frame);
 
-    // The screen itself — a CanvasTexture idle slate that says
-    // "Click to browse Bilibili / YouTube". When the player clicks
-    // we hand off to the HTML overlay (HomeTheater.open()).
-    const screenTex = this._makeHomeTheaterIdleTexture();
+    // The screen itself — starts with an idle CanvasTexture slate.
+    // Once the user picks a clip (or clicks the screen), we swap the
+    // material's map/emissiveMap to a THREE.VideoTexture sampled from
+    // HomeTheater's shared <video crossorigin="anonymous"> element.
+    // Because VideoTexture works regardless of whether the <video>
+    // node is on-screen, this is the path that lets video play on the
+    // 3D cinema screen *in immersive VR* (where DOM iframes are gone).
+    const idleTex = this._makeHomeTheaterIdleTexture();
     const screenMat = new THREE.MeshStandardMaterial({
-      map: screenTex,
+      map: idleTex,
       emissive: 0xffffff,
-      emissiveMap: screenTex,
+      emissiveMap: idleTex,
       emissiveIntensity: 0.85,
       roughness: 0.95, metalness: 0,
     });
@@ -1099,15 +1103,41 @@ class LeisureVRRoom extends VRRoom {
     );
     screen.position.set(0, screenY, wallZ + 0.16);
     screen.userData.onClick = () => {
-      // Desktop / pointer: pop the iframe overlay. In immersive VR
-      // the DOM is hidden by the compositor, so we just pulse the
-      // companion as feedback that the click was received.
-      if (window.HomeTheater?.open) window.HomeTheater.open();
+      // First click: load + play the first clip (also fires ht:load
+      // so the texture swap below kicks in). Subsequent clicks toggle
+      // play/pause directly. Works in desktop AND VR — no overlay
+      // needed for basic playback.
+      const HT = window.HomeTheater;
+      if (!HT) return;
+      if (!HT.isReady?.()) HT.playIndex(0);
+      else                 HT.togglePlay();
       if (this.companion) this.companion.setExpression('happy');
     };
     this.group.add(screen);
     this.interactables.push(screen);
     this._theaterScreen = screen;
+    this._theaterIdleTex = idleTex;
+
+    // Build (lazily) and bind the VideoTexture once HomeTheater loads
+    // its first source. We only need ONE VideoTexture for the lifetime
+    // of the room — re-binding `video.src` keeps reusing the same
+    // texture since the underlying HTMLVideoElement is shared.
+    this._onHTLoad = () => {
+      const HT = window.HomeTheater;
+      if (!HT?.video) return;
+      if (!this._videoTexture) {
+        const tex = new THREE.VideoTexture(HT.video);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.minFilter  = THREE.LinearFilter;
+        tex.magFilter  = THREE.LinearFilter;
+        this._videoTexture = tex;
+      }
+      screenMat.map          = this._videoTexture;
+      screenMat.emissiveMap  = this._videoTexture;
+      screenMat.emissiveIntensity = 1.15;
+      screenMat.needsUpdate  = true;
+    };
+    window.addEventListener('ht:load', this._onHTLoad);
 
     // Glow accent in front of the screen — soft bluish wash on the
     // first row of seats so the room reads as "powered on".
@@ -1166,8 +1196,99 @@ class LeisureVRRoom extends VRRoom {
     subCone.position.set(0, 0.4, wallZ + 0.81);
     this.group.add(subCone);
 
+    // ── Floating control bar (3D, clickable in both modes) ────
+    // Sits between the screen and the seats so VR users can switch
+    // clips / pause without needing DOM overlays. Built as a row of
+    // four CanvasTexture-labelled pill meshes facing the audience.
+    this._buildHomeTheaterControls(wallZ);
+
     // Stash refs for the bias-light breathing animation.
     this._theaterBias = biasMat;
+  }
+
+  // Four-button remote bar floating between front-row seats and the
+  // screen. Positions: y ≈ chest height for a standing user, z just
+  // forward of the screen so it's reachable via VR controller raycast.
+  _buildHomeTheaterControls(wallZ) {
+    const buttons = [
+      { label: 'PREV',  sub: '上一段', action: () => window.HomeTheater?.prev() },
+      { label: 'PLAY',  sub: '播放/暂停', action: () => window.HomeTheater?.togglePlay() },
+      { label: 'NEXT',  sub: '下一段', action: () => window.HomeTheater?.next() },
+      { label: 'BROWSE', sub: '面板',  action: () => window.HomeTheater?.open() },
+    ];
+
+    const padW = 0.95, padH = 0.42, padD = 0.10;
+    const gap  = 0.12;
+    const barZ = wallZ + 4.2;        // 4.2m in front of the back wall
+    const barY = 1.45;
+    const totalW = buttons.length * padW + (buttons.length - 1) * gap;
+    let x = -totalW / 2 + padW / 2;
+
+    const baseMat = new THREE.MeshStandardMaterial({
+      color: 0x1c1a28, roughness: 0.55, metalness: 0.2,
+    });
+
+    for (const def of buttons) {
+      // Front-face label texture
+      const tex = this._makeRemoteButtonTexture(def.label, def.sub);
+      const faceMat = new THREE.MeshStandardMaterial({
+        map: tex, emissive: 0xffffff, emissiveMap: tex,
+        emissiveIntensity: 0.6, roughness: 0.6, metalness: 0.1,
+      });
+
+      // Box: front face uses the label material, the rest matte black.
+      // BoxGeometry's material order is [+x, -x, +y, -y, +z, -z].
+      const pad = new THREE.Mesh(
+        new THREE.BoxGeometry(padW, padH, padD),
+        [baseMat, baseMat, baseMat, baseMat, faceMat, baseMat],
+      );
+      pad.position.set(x, barY, barZ);
+      pad.userData.onClick = () => {
+        def.action?.();
+        // Tiny press animation: nudge the pad backward briefly.
+        pad.position.z = barZ - 0.04;
+        setTimeout(() => { pad.position.z = barZ; }, 120);
+      };
+      this.group.add(pad);
+      this.interactables.push(pad);
+
+      x += padW + gap;
+    }
+  }
+
+  // Build a soft-glow pill button face with primary + sub-label.
+  _makeRemoteButtonTexture(primary, secondary) {
+    const W = 256, H = 128;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Backdrop with subtle vertical gradient.
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#2a2440');
+    grad.addColorStop(1, '#171328');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Inner border for tactile look.
+    ctx.strokeStyle = 'rgba(150, 145, 220, 0.45)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(6, 6, W - 12, H - 12);
+
+    ctx.fillStyle = '#f1ecff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 38px "Segoe UI",Arial,sans-serif';
+    ctx.fillText(primary, W / 2, H / 2 - 10);
+
+    ctx.fillStyle = 'rgba(195, 188, 230, 0.78)';
+    ctx.font = '500 22px "Segoe UI","PingFang SC",Arial,sans-serif';
+    ctx.fillText(secondary, W / 2, H / 2 + 28);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
   }
 
   // Idle slate drawn into a CanvasTexture so the screen looks like a
@@ -1228,7 +1349,7 @@ class LeisureVRRoom extends VRRoom {
     // Footer hint.
     ctx.fillStyle = 'rgba(220, 215, 255, 0.6)';
     ctx.font = '400 26px "Segoe UI","PingFang SC",Arial,sans-serif';
-    ctx.fillText('Click the screen to browse · 点击屏幕开始浏览', W / 2, H - 32);
+    ctx.fillText('Click the screen or PLAY to start · 点击屏幕或 PLAY 开始播放', W / 2, H - 32);
 
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;
@@ -1245,10 +1366,19 @@ class LeisureVRRoom extends VRRoom {
     }
   }
 
-  // Close the iframe overlay if the player walks back to the hub.
+  // Pause playback + close the overlay when the player walks back
+  // to the hub, so audio doesn't follow them around the building.
   exit() {
     super.exit();
-    if (window.HomeTheater?.close) window.HomeTheater.close();
+    const HT = window.HomeTheater;
+    if (HT) {
+      HT.close?.();
+      HT.video?.pause?.();
+    }
+    if (this._onHTLoad) {
+      window.removeEventListener('ht:load', this._onHTLoad);
+      this._onHTLoad = null;
+    }
   }
 
   getSpawnPoint() {
