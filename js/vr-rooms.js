@@ -2558,8 +2558,11 @@ class GamesVRRoom extends VRRoom {
     c.whiteMat = new THREE.MeshStandardMaterial({
       color: 0xEFE6CF, roughness: 0.94, metalness: 0.0,
     });
+    // Black pieces use a warm mahogany/espresso instead of cool charcoal
+    // so the back-rank silhouette no longer melts into the deep-navy
+    // upper wall (0x171028) when looking across the board.
     c.blackMat = new THREE.MeshStandardMaterial({
-      color: 0x2A2018, roughness: 0.92, metalness: 0.0,
+      color: 0x5A2E1C, roughness: 0.92, metalness: 0.0,
     });
     // Accent material — slightly different shade for crown rings,
     // cross arms, knight eyes etc. Same matte treatment.
@@ -2567,7 +2570,7 @@ class GamesVRRoom extends VRRoom {
       color: 0xC9B98F, roughness: 0.95, metalness: 0.0,
     });
     c.blackAccent = new THREE.MeshStandardMaterial({
-      color: 0x3A2E22, roughness: 0.95, metalness: 0.0,
+      color: 0x6E3C26, roughness: 0.95, metalness: 0.0,
     });
 
     // Build piece factory closures. Each factory builds a Group with
