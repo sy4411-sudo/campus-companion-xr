@@ -1174,66 +1174,111 @@ class GamesVRRoom extends VRRoom {
     this.group.add(light3);
     
     // ── Wall-hugging Tripo decorations ───────────────────────────
-    // Every floor-standing item is pushed close to its wall so the
-    // playing area in the centre stays clear for the giant floor board.
+    // Floor items are pulled away from the walls (x = ±8, z = ±8) by a
+    // generous half-depth margin so deep cabinets — especially the
+    // pinball — never poke through the wall plane.
 
     // Two arcade cabinets on the back wall — screens face the player (+Z),
     // each cabinet tilted slightly inward toward room center.
     mountTripoModel(this.group, 'arcade_blue',
-      { position: [-6, 0, -7.55], rotationY: Math.PI + Math.PI / 8,
+      { position: [-6, 0, -7.4], rotationY: Math.PI + Math.PI / 8,
         targetSize: 2.2, yAlign: 'bottom' });
     mountTripoModel(this.group, 'arcade_pink',
-      { position: [6, 0, -7.55], rotationY: Math.PI - Math.PI / 8,
+      { position: [6, 0, -7.4], rotationY: Math.PI - Math.PI / 8,
         targetSize: 2.2, yAlign: 'bottom' });
 
-    // Pinball machine pushed flush against the back wall, faces +Z.
+    // Pinball machine — slightly smaller and pulled in, since this model
+    // is by far the deepest. Sits between the arcades, faces +Z.
     mountTripoModel(this.group, 'pinball_machine',
-      { position: [0, 0, -7.6], rotationY: Math.PI,
-        targetSize: 1.8, yAlign: 'bottom' });
+      { position: [0, 0, -7.35], rotationY: Math.PI,
+        targetSize: 1.5, yAlign: 'bottom' });
 
-    // Glowing "GAME ON" neon sign high on the back wall, faces +Z.
+    // Glowing "GAME ON" neon sign high on the back wall, flat decoration.
     mountTripoModel(this.group, 'neon_game_sign',
-      { position: [0, 3.6, -7.9], rotationY: Math.PI,
+      { position: [0, 3.6, -7.92], rotationY: Math.PI,
         targetSize: 2.4, yAlign: 'center' });
 
     // Dartboard cabinet wall-mounted on the left wall, faces +X.
     mountTripoModel(this.group, 'dartboard_cabinet',
-      { position: [-7.9, 1.9, -3.5], rotationY: -Math.PI / 2,
+      { position: [-7.92, 1.9, -3.5], rotationY: -Math.PI / 2,
         targetSize: 1.1, yAlign: 'center' });
 
     // Snack & soda vending machine on the right wall (entrance side).
     mountTripoModel(this.group, 'vending_machine_snacks',
-      { position: [7.6, 0, 5], rotationY: Math.PI / 2,
+      { position: [7.45, 0, 5], rotationY: Math.PI / 2,
         targetSize: 2.0, yAlign: 'bottom' });
 
     // Trophy shelf on the left wall (entrance side).
     mountTripoModel(this.group, 'trophy_shelf',
-      { position: [-7.6, 0, 5], rotationY: -Math.PI / 2,
+      { position: [-7.45, 0, 5], rotationY: -Math.PI / 2,
         targetSize: 1.4, yAlign: 'bottom' });
 
-    // ── Giant floor game board (~85% of the 16×16 floor) ────────
-    // 14.75 × 14.75 ≈ 217.6 m² / 256 m² ≈ 85.0%.
-    this._buildFloorBoard(14.75);
+    // ── Giant floor game board ──────────────────────────────────
+    // 13.6 × 13.6 ≈ 184.96 m² / 256 m² ≈ 72.3% of floor area.
+    // Slightly smaller than before so its edges (±6.8) clear all
+    // wall-furniture footprints (deepest is the pinball front ≈ z -6.85).
+    this._buildFloorBoard(13.6);
 
-    // ── Two front-facing mode buttons on the back wall ──────────
-    // Slot them between the pinball (centre) and the arcades (corners),
-    // at eye level for both seated and standing players.
-    this._buildModeButton({
-      position: new THREE.Vector3(-3, 1.7, -7.85),
+    // ── Four wall control buttons ───────────────────────────────
+    // Left pair → choose floor-board mode (Go / Chess).
+    // Right pair → control gameplay (Start / End).
+    // Each button has an icon plate floating just above it.
+    const Z_WALL = -7.86;
+    const Y_BTN  = 2.55;
+    this._buildWallButton({
+      position: new THREE.Vector3(-4.5, Y_BTN, Z_WALL),
       label: '五子棋 / 围棋',
       sublabel: 'GO BOARD',
+      icon: 'go',
       accent: 0xFFAA00,
       onSelect: () => this._setBoardMode('go'),
     });
-    this._buildModeButton({
-      position: new THREE.Vector3(3, 1.7, -7.85),
+    this._buildWallButton({
+      position: new THREE.Vector3(-1.8, Y_BTN, Z_WALL),
       label: '国际象棋',
       sublabel: 'CHESS BOARD',
+      icon: 'chess',
       accent: 0x00C8FF,
       onSelect: () => this._setBoardMode('chess'),
     });
+    this._buildWallButton({
+      position: new THREE.Vector3(1.8, Y_BTN, Z_WALL),
+      label: '开始游戏',
+      sublabel: 'START',
+      icon: 'play',
+      accent: 0x35E07A,
+      onSelect: () => this._startGame(),
+    });
+    this._buildWallButton({
+      position: new THREE.Vector3(4.5, Y_BTN, Z_WALL),
+      label: '结束游戏',
+      sublabel: 'END',
+      icon: 'stop',
+      accent: 0xFF5566,
+      onSelect: () => this._endGame(),
+    });
 
     this.onReady();
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Game lifecycle stubs — wired up later. Right now they just
+  //  give the player a friendly cue so the buttons feel alive.
+  // ────────────────────────────────────────────────────────────
+  _startGame() {
+    if (this.companion) {
+      this.companion.setExpression('happy');
+      setTimeout(() => this.companion.setExpression('idle'), 1200);
+    }
+    // TODO: hook into actual game logic when implemented.
+  }
+
+  _endGame() {
+    if (this.companion) {
+      this.companion.setExpression('empathy');
+      setTimeout(() => this.companion.setExpression('idle'), 1200);
+    }
+    // TODO: hook into actual game logic when implemented.
   }
 
   // ────────────────────────────────────────────────────────────
@@ -1416,92 +1461,124 @@ class GamesVRRoom extends VRRoom {
   }
 
   // ────────────────────────────────────────────────────────────
-  //  Mode buttons: front-facing arcade plates with a glowing edge
-  //  ring. Hooked into both VR (xr.registerInteractable) and
-  //  desktop (scene.addClickable) via userData.onClick.
+  //  Wall buttons: arcade-style plates with a separate icon plate
+  //  floating just above. The plate physically depresses on click
+  //  and the controller pulses (via xr.pulseController). Hooked into
+  //  both VR (xr.registerInteractable) and desktop (scene.addClickable)
+  //  through userData.onClick — the same handler serves both.
   // ────────────────────────────────────────────────────────────
-  _buildModeButton({ position, label, sublabel, accent, onSelect }) {
-    const w = 1.3, h = 0.85, d = 0.08;
+  _buildWallButton({ position, label, sublabel, icon, accent, onSelect }) {
+    const w = 1.5, h = 0.78, d = 0.10;
     const accentHex = `#${accent.toString(16).padStart(6, '0')}`;
 
+    // Root group sits on the back wall and faces the player (+Z).
     const panel = new THREE.Group();
     panel.position.copy(position);
-    // Buttons sit on the back wall (-Z) and face the player (+Z).
     panel.rotation.y = Math.PI;
     this.group.add(panel);
 
-    // Glow halo: slightly larger flat plane behind the panel face.
-    const haloGeom = new THREE.PlaneGeometry(w * 1.18, h * 1.22);
-    const haloMat = new THREE.MeshBasicMaterial({
-      color: accent,
-      transparent: true,
-      opacity: 0.35,
-      side: THREE.DoubleSide,
-      depthWrite: false,
+    // ── Recessed housing (dark frame the button sinks into) ────
+    const housingMat = new THREE.MeshStandardMaterial({
+      color: 0x14141C, roughness: 0.85, metalness: 0.1,
     });
-    const halo = new THREE.Mesh(haloGeom, haloMat);
+    const housing = new THREE.Mesh(
+      new THREE.BoxGeometry(w + 0.12, h + 0.12, 0.04),
+      housingMat
+    );
+    housing.position.set(0, 0, 0.02);
+    panel.add(housing);
+
+    // ── Glow halo behind everything ───────────────────────────
+    const halo = new THREE.Mesh(
+      new THREE.PlaneGeometry(w * 1.22, h * 1.32),
+      new THREE.MeshBasicMaterial({
+        color: accent, transparent: true, opacity: 0.32,
+        side: THREE.DoubleSide, depthWrite: false,
+      })
+    );
     halo.position.set(0, 0, 0.001);
     panel.add(halo);
 
-    // Front face with the label texture.
+    // ── Movable button cap (depresses on click) ───────────────
     const tex = this._makeButtonTexture(label, sublabel, accentHex);
-    const faceGeom = new THREE.BoxGeometry(w, h, d);
     const faceMat = new THREE.MeshStandardMaterial({
-      color: 0xFFFFFF,
-      map: tex,
-      roughness: 0.4,
-      metalness: 0.15,
-      emissive: accent,
-      emissiveIntensity: 0.25,
+      color: 0xFFFFFF, map: tex,
+      roughness: 0.45, metalness: 0.15,
+      emissive: accent, emissiveIntensity: 0.22,
     });
-    // Apply texture only to the front face by giving the box per-face mats.
     const sideMat = new THREE.MeshStandardMaterial({
-      color: 0x1B1B22,
-      roughness: 0.7,
-      metalness: 0.2,
-      emissive: accent,
-      emissiveIntensity: 0.18,
+      color: 0x222230, roughness: 0.7, metalness: 0.25,
+      emissive: accent, emissiveIntensity: 0.14,
     });
-    const faceMats = [
-      sideMat, sideMat, sideMat, sideMat,
-      faceMat,  // +Z front
-      sideMat,  // -Z back
-    ];
-    const face = new THREE.Mesh(faceGeom, faceMats);
-    face.position.set(0, 0, d * 0.6);
-    panel.add(face);
+    const cap = new THREE.Mesh(
+      new THREE.BoxGeometry(w, h, d),
+      [sideMat, sideMat, sideMat, sideMat, faceMat, sideMat],
+    );
+    const restZ = d * 0.65;          // resting (out) position
+    const pressZ = restZ - 0.045;    // pressed (in)  position
+    cap.position.set(0, 0, restZ);
+    panel.add(cap);
 
-    // A tiny accent point light gives the button a real "neon" feel.
-    const buttonLight = new THREE.PointLight(accent, 0.6, 3.5);
-    buttonLight.position.set(0, 0, 0.6);
+    // ── Icon plate floating above the button ──────────────────
+    const iconTex = this._makeIconTexture(icon, accentHex);
+    const iconPlate = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.5, 0.5),
+      new THREE.MeshBasicMaterial({
+        map: iconTex, transparent: true, side: THREE.DoubleSide,
+      })
+    );
+    iconPlate.position.set(0, h / 2 + 0.36, 0.06);
+    panel.add(iconPlate);
+
+    // Tiny support stem behind the icon plate so it reads as an
+    // attached label rather than a floating sticker.
+    const stem = new THREE.Mesh(
+      new THREE.BoxGeometry(0.04, 0.16, 0.02),
+      housingMat,
+    );
+    stem.position.set(0, h / 2 + 0.13, 0.04);
+    panel.add(stem);
+
+    // ── Accent point light for the "neon" look ────────────────
+    const buttonLight = new THREE.PointLight(accent, 0.55, 3.2);
+    buttonLight.position.set(0, 0, 0.55);
     panel.add(buttonLight);
 
-    // Make the entire panel clickable. The interaction system walks up
-    // the parent chain looking for userData.onClick, so registering the
-    // visible front face is enough.
-    face.userData.onClick = () => onSelect();
-    this.interactables.push(face);
+    // ── Click handler with press-down + light pulse + haptics ─
+    const baseLight = buttonLight.intensity;
+    const baseEmit = faceMat.emissiveIntensity;
+    let animId = 0;
+    const pressVisual = () => {
+      // Cancel any in-flight animation so rapid clicks don't fight.
+      if (animId) clearTimeout(animId);
+      cap.position.z = pressZ;
+      buttonLight.intensity = baseLight * 2.6;
+      faceMat.emissiveIntensity = 0.85;
+      animId = setTimeout(() => {
+        cap.position.z = restZ;
+        buttonLight.intensity = baseLight;
+        faceMat.emissiveIntensity = baseEmit;
+        animId = 0;
+      }, 180);
+    };
 
-    // Light bounce on click for clear feedback.
-    const originalIntensity = buttonLight.intensity;
-    const origEmissive = faceMat.emissiveIntensity;
-    face.userData._pulse = () => {
-      buttonLight.intensity = originalIntensity * 2.4;
-      faceMat.emissiveIntensity = 0.9;
-      setTimeout(() => {
-        buttonLight.intensity = originalIntensity;
-        faceMat.emissiveIntensity = origEmissive;
-      }, 220);
+    // The interaction systems walk up the parent chain looking for
+    // userData.onClick, so registering the cap is enough.
+    cap.userData.onClick = (_mesh, ctx) => {
+      pressVisual();
+      // Haptic kick — XR auto-pulses too, but a stronger custom pulse
+      // gives the button a punchier feel than the default tap.
+      if (ctx?.xr && ctx?.controller) {
+        ctx.xr.pulseController(ctx.controller, 0.85, 110);
+      }
+      onSelect();
     };
-    const userOnClick = face.userData.onClick;
-    face.userData.onClick = () => {
-      face.userData._pulse();
-      userOnClick();
-    };
+    this.interactables.push(cap);
   }
 
+  // ── Button face texture: title + sublabel only (icon is separate) ──
   _makeButtonTexture(label, sublabel, accentHex) {
-    const w = 1024, h = 640;
+    const w = 1024, h = 540;
     const canvas = document.createElement('canvas');
     canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d');
@@ -1513,29 +1590,147 @@ class GamesVRRoom extends VRRoom {
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, w, h);
 
-    // Glowing border ring in the accent colour.
+    // Glowing inner border ring in the accent colour.
     ctx.strokeStyle = accentHex;
-    ctx.lineWidth = 12;
+    ctx.lineWidth = 10;
     ctx.shadowColor = accentHex;
-    ctx.shadowBlur = 28;
-    ctx.strokeRect(28, 28, w - 56, h - 56);
+    ctx.shadowBlur = 24;
+    ctx.strokeRect(24, 24, w - 48, h - 48);
     ctx.shadowBlur = 0;
 
-    // Big bilingual label.
+    // Title (Chinese).
     ctx.fillStyle = '#FFFFFF';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = 'bold 96px "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.fillText(label, w / 2, h / 2 - 50);
+    ctx.fillText(label, w / 2, h / 2 - 38);
 
+    // Subtitle (English) in accent colour.
     ctx.fillStyle = accentHex;
     ctx.font = 'bold 56px "Helvetica Neue", Arial, sans-serif';
     ctx.fillText(sublabel, w / 2, h / 2 + 60);
 
-    // Small "TAP / TRIGGER" hint.
-    ctx.fillStyle = '#9090A8';
-    ctx.font = '32px "Helvetica Neue", Arial, sans-serif';
-    ctx.fillText('点击切换  ·  TAP TO SWITCH', w / 2, h - 70);
+    // Tiny instruction hint.
+    ctx.fillStyle = '#8A8AA0';
+    ctx.font = '28px "Helvetica Neue", Arial, sans-serif';
+    ctx.fillText('点击  ·  TAP', w / 2, h - 46);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  // ── Icon plate texture: dark rounded backing + accent symbol ──
+  //   kind: 'go' | 'chess' | 'play' | 'stop'
+  _makeIconTexture(kind, accentHex) {
+    const size = 512;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    // Rounded dark backing.
+    const r = size * 0.18;
+    ctx.fillStyle = '#0E0E16';
+    ctx.beginPath();
+    ctx.moveTo(r, 0);
+    ctx.lineTo(size - r, 0);    ctx.quadraticCurveTo(size, 0, size, r);
+    ctx.lineTo(size, size - r); ctx.quadraticCurveTo(size, size, size - r, size);
+    ctx.lineTo(r, size);        ctx.quadraticCurveTo(0, size, 0, size - r);
+    ctx.lineTo(0, r);           ctx.quadraticCurveTo(0, 0, r, 0);
+    ctx.closePath();
+    ctx.fill();
+
+    // Glowing accent border.
+    ctx.strokeStyle = accentHex;
+    ctx.lineWidth = 10;
+    ctx.shadowColor = accentHex;
+    ctx.shadowBlur = 22;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Symbol drawing happens inside an inset square.
+    const cx = size / 2, cy = size / 2;
+    const inset = size * 0.22;
+
+    if (kind === 'go') {
+      // 3×3 mini grid with two stones (one black, one white) — instantly
+      // reads as "board game with stones".
+      const innerL = inset, innerR = size - inset;
+      const span = innerR - innerL;
+      ctx.strokeStyle = accentHex;
+      ctx.lineWidth = 6;
+      for (let i = 0; i < 3; i++) {
+        const p = innerL + (span * i) / 2;
+        ctx.beginPath(); ctx.moveTo(innerL, p); ctx.lineTo(innerR, p); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(p, innerL); ctx.lineTo(p, innerR); ctx.stroke();
+      }
+      // Black stone
+      ctx.fillStyle = '#0A0A10';
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(innerL + span * 0.0, innerL + span * 0.0, span * 0.18, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+      // White stone
+      ctx.fillStyle = '#FFFFFF';
+      ctx.strokeStyle = '#0A0A10';
+      ctx.beginPath();
+      ctx.arc(innerL + span * 1.0, innerL + span * 1.0, span * 0.18, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+
+    } else if (kind === 'chess') {
+      // Stylised chess king silhouette.
+      ctx.fillStyle = accentHex;
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 6;
+      // Cross on top
+      ctx.fillRect(cx - 12, cy - 170, 24, 60);
+      ctx.fillRect(cx - 36, cy - 146, 72, 24);
+      // Crown band
+      ctx.beginPath();
+      ctx.moveTo(cx - 90, cy - 90);
+      ctx.lineTo(cx + 90, cy - 90);
+      ctx.lineTo(cx + 70, cy - 50);
+      ctx.lineTo(cx - 70, cy - 50);
+      ctx.closePath();
+      ctx.fill();
+      // Body
+      ctx.beginPath();
+      ctx.moveTo(cx - 70, cy - 50);
+      ctx.lineTo(cx + 70, cy - 50);
+      ctx.lineTo(cx + 50, cy + 70);
+      ctx.lineTo(cx - 50, cy + 70);
+      ctx.closePath();
+      ctx.fill();
+      // Base
+      ctx.fillRect(cx - 100, cy + 70, 200, 32);
+      ctx.fillRect(cx - 120, cy + 102, 240, 24);
+
+    } else if (kind === 'play') {
+      // Play triangle — equilateral, optically centred (slight x shift).
+      ctx.fillStyle = accentHex;
+      ctx.beginPath();
+      const s = size * 0.34;
+      ctx.moveTo(cx - s * 0.55, cy - s);
+      ctx.lineTo(cx + s,        cy);
+      ctx.lineTo(cx - s * 0.55, cy + s);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 6;
+      ctx.stroke();
+
+    } else if (kind === 'stop') {
+      // Stop square.
+      ctx.fillStyle = accentHex;
+      const s = size * 0.36;
+      ctx.fillRect(cx - s, cy - s, s * 2, s * 2);
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 6;
+      ctx.strokeRect(cx - s, cy - s, s * 2, s * 2);
+    }
 
     const tex = new THREE.CanvasTexture(canvas);
     tex.colorSpace = THREE.SRGBColorSpace;

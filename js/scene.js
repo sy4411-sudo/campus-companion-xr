@@ -934,7 +934,7 @@ export class CampusScene {
     // 1) Walk up to find a userData.onClick handler (e.g. exit portal in VR rooms).
     let m = obj;
     while (m && !m.userData?.onClick) m = m.parent;
-    if (m?.userData?.onClick) { m.userData.onClick(m); return; }
+    if (m?.userData?.onClick) { m.userData.onClick(m, { source: 'desktop' }); return; }
 
     // 2) Zone entry (platform / portal plane).
     const zone = obj.userData.zone || ZONES[obj.userData.zoneIdx];
