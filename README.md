@@ -109,7 +109,6 @@ campus-companion-xr/
 │   ├── tripo.js            # Tripo AI client (text→3D, poll, load)
 │   ├── agent.js            # Zhipu GLM AI companion (context-aware)
 │   ├── scene.js            # Three.js 3D scene (hall + 5 zones)
-│   ├── games.js            # 4 mini-games (canvas 2D)
 │   ├── chat.js             # Chat panel UI controller
 │   └── main.js             # App orchestration (ES module entry)
 └── README.md

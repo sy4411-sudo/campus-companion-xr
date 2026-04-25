@@ -61,7 +61,6 @@ export class XRManager {
     this.renderer.xr.addEventListener('sessionstart', () => {
       // In VR, hide all HTML panels
       document.getElementById('chat-panel')?.classList.add('hidden');
-      document.getElementById('game-panel')?.classList.add('hidden');
       document.getElementById('nav-hint')?.classList.add('hidden');
       document.getElementById('top-nav')?.classList.add('hidden');
       document.getElementById('zone-indicator')?.classList.add('hidden');
@@ -123,6 +122,27 @@ export class XRManager {
     this._teleportIndicator = g;
   }
 
+  // ── Haptics ───────────────────────────────────────────────
+  /**
+   * Pulse the haptic actuator on the gamepad backing `ctrl`.
+   * Quietly no-ops when the runtime / controller doesn't expose haptics.
+   * @param {THREE.Group} ctrl   one of this.controllers
+   * @param {number} intensity   0..1
+   * @param {number} duration    milliseconds (typical 30-150)
+   */
+  pulseController(ctrl, intensity = 0.6, duration = 70) {
+    try {
+      const idx = this.controllers.indexOf(ctrl);
+      if (idx < 0) return;
+      const session = this.renderer.xr.getSession();
+      // inputSources order matches the controller index three.js exposes.
+      const src = session?.inputSources?.[idx];
+      const pad = src?.gamepad;
+      const actuator = pad?.hapticActuators?.[0];
+      if (actuator?.pulse) actuator.pulse(intensity, duration);
+    } catch (_) { /* haptics are best-effort */ }
+  }
+
   // ── Select (trigger pull) ─────────────────────────────────
   _onSelectStart(ctrl) {
     // 1. Check interactable buttons/panels (VR UI) - highest priority
@@ -133,6 +153,7 @@ export class XRManager {
       // Check for interactive panels with UV coordinates (games, etc.)
       if (hitObj.userData?.isInteractive && hitObj.userData?.onPointerDown && btnHit.uv) {
         hitObj.userData.onPointerDown(btnHit.uv);
+        this.pulseController(ctrl, 0.45, 50);
         return;
       }
       
@@ -140,12 +161,25 @@ export class XRManager {
       let mesh = hitObj;
       while (mesh && !mesh.userData.onClick) mesh = mesh.parent;
       if (mesh?.userData?.onClick) {
-        mesh.userData.onClick(mesh);
-        return;
+        const result = mesh.userData.onClick(mesh, {
+          source: 'xr',
+          controller: ctrl,
+          xr: this,
+          point: btnHit.point ? btnHit.point.clone() : null,
+          uv: btnHit.uv ? btnHit.uv.clone() : null,
+          hitObject: hitObj,
+        });
+        // Handlers can return `false` to opt out (e.g. floor-board when no
+        // game is active) and let the trigger fall through to teleport.
+        if (result !== false) {
+          this.pulseController(ctrl, 0.7, 80);
+          return;
+        }
       }
       
       // Check for exit portal
       if (hitObj.userData?.isExitPortal && hitObj.userData?.onClick) {
+        this.pulseController(ctrl, 0.5, 60);
         hitObj.userData.onClick();
         return;
       }

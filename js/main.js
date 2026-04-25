@@ -1,6 +1,6 @@
 // ============================================================
 //  Campus Companion XR — Main Entry Point (ES Module)
-//  Orchestrates: Scene → XR → Avatar → Agent → Chat → Games
+//  Orchestrates: Scene → XR → Avatar → Agent → Chat
 // ============================================================
 
 import { CampusScene } from './scene.js';
@@ -15,11 +15,6 @@ const zoneIndicator  = document.getElementById('zone-indicator');
 const zoneIconEl     = document.getElementById('zone-icon');
 const zoneNameEl     = document.getElementById('zone-name');
 const zoneTooltip    = document.getElementById('zone-tooltip');
-const gamePanelEl    = document.getElementById('game-panel');
-const gameCloseBtn   = document.getElementById('game-close');
-const gameCanvasEl   = document.getElementById('game-canvas');
-const gameStatusEl   = document.getElementById('game-status');
-const gameTabs       = document.querySelectorAll('.game-tab');
 const homeBtn        = document.getElementById('home-btn');
 const chatToggleBtn  = document.getElementById('chat-toggle-btn');
 const tripoStatusEl  = document.getElementById('tripo-status');
@@ -128,9 +123,6 @@ async function boot() {
 
   // Init Chat
   Chat.init({ onSend: async msg => Agent.chat(msg) });
-
-  // Init Games
-  Games.init(gameCanvasEl, gameStatusEl);
 
   // Init Voice
   VoiceInput.init({
@@ -241,15 +233,8 @@ function handleZoneClick(zone) {
 }
 
 function handleZoneDesktop(zone) {
-  if (zone.id === 'games') {
-    openGamePanel();
-    Chat.setZone(zone);
-    if (!document.getElementById('chat-panel').classList.contains('visible')) Chat.open(zone);
-  } else {
-    closeGamePanel();
-    Chat.open(zone);
-    Chat.setZone(zone);
-  }
+  Chat.open(zone);
+  Chat.setZone(zone);
   // AR study room button visibility
   if (arStudyBtn) arStudyBtn.style.display = zone.id === 'study' ? '' : 'none';
 
@@ -323,7 +308,6 @@ function goHome() {
   scene.flyHome();
   activeZone = null;
   zoneIndicator.classList.add('hidden');
-  closeGamePanel();
   Chat.close();
   scene.setActiveZone(null);
   if (arStudyBtn) arStudyBtn.style.display = 'none';
@@ -547,29 +531,6 @@ function updateZoneIndicator(zone) {
   // Show AR button only in study zone (if AR supported)
   if (arStudyBtn) arStudyBtn.style.display = (zone.id === 'study') ? '' : 'none';
 }
-
-// ── Game panel ────────────────────────────────────────────────
-function openGamePanel() {
-  gamePanelEl.classList.remove('hidden');
-  gamePanelEl.classList.add('visible');
-  Games.launch('coloring');
-  document.querySelector('.game-tab[data-game="coloring"]')?.classList.add('active');
-}
-
-function closeGamePanel() {
-  gamePanelEl.classList.remove('visible');
-  gamePanelEl.classList.add('hidden');
-}
-
-gameTabs.forEach(tab => {
-  tab.addEventListener('click', () => {
-    gameTabs.forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    Games.launch(tab.dataset.game);
-  });
-});
-
-gameCloseBtn?.addEventListener('click', closeGamePanel);
 
 // ── Nav buttons ───────────────────────────────────────────────
 homeBtn?.addEventListener('click', goHome);

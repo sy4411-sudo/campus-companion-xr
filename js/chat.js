@@ -65,13 +65,15 @@ const Chat = (() => {
   }
 
   // ── Greet ────────────────────────────────────────────────
+  // Each zone has its OWN companion character — different name, different
+  // voice — so the greeting sets the tone right away.
   function greet(zone) {
     const greetings = {
-      chat:    ["Hey! I'm Lele 👋 I'm here to listen — no judgment, just vibes. How are you doing today?\n\n嗨！我是乐乐 👋 我在这里陪你聊聊，没有评判，就是轻松地说说话。你今天怎么样？"],
-      study:   ["Hey! Ready to tackle some studying? Tell me what you're working on!\n\n嗨！准备好学习了吗？跟我说说你在做什么课题！"],
-      leisure: ["Hey! 🎭 Let's chill. Any good books or shows you've been into lately?\n\n嗨！🎭 放松一下嘛。最近有没有什么好书或好剧？"],
-      healing: ["Welcome 🌿 Take a slow breath. This is your quiet corner. What do you need today?\n\n欢迎 🌿 慢慢呼吸。这是你的宁静角落。你今天需要什么？"],
-      games:   ["Game time! 🎮 Choose a game above and let's have some fun!\n\n游戏时间！🎮 选个游戏，放松一下！"],
+      chat:    ["嗨，我是乐乐 👋 在这里就是想陪你慢慢聊聊。有什么压在心里的、开心的、奇怪的，都可以说给我听。\n\nHey, I'm Lele — I'm here just to listen, no judgment. Tell me anything that's on your mind."],
+      study:   ["你好，我是知知 📚 学习的事交给我吧——你卡在哪一步了？发我题目或概念，我们一起拆开看。\n\nHi, I'm Zhizhi. Drop the topic or problem and we'll break it down step by step."],
+      leisure: ["嘿嘿，我是悠悠 🎭 最近有什么超上头的书、剧、歌吗？快推给我，我也馋着追新坑！\n\nHey, I'm Youyou. Got any books / shows / songs you're obsessed with lately? Spill!"],
+      healing: ["……欢迎来到这里 🌿\n我是安安。先不急着说什么，慢慢呼吸，喝口水，准备好了再聊。\n\n…Welcome. I'm An'an. No rush — just breathe. We can talk whenever you're ready."],
+      games:   ["嘿嘿我是童童 🎮 想下五子棋吗？按墙上「开始游戏」，你执黑先手，我陪你玩~\n\nHey, I'm Tongtong! Hit the START button on the wall and let's play some gomoku — you go first!"],
     };
     const pool = zone ? (greetings[zone.id] || greetings.chat) : greetings.chat;
     addBubble(pool[0], 'assistant');

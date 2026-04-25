@@ -226,23 +226,6 @@ html, body { width:100%; height:100%; overflow:hidden; background:#120e0a; font-
 #chat-input::placeholder { color:#b8a080; }
 .send-btn { padding:.5rem 1rem; font-size:.88rem; white-space:nowrap; }
 
-/* ── Game panel ─────────────────────────────────────────── */
-#game-panel {
-  position:fixed; bottom:50px; left:50%; transform:translateX(-50%);
-  z-index:100; background:var(--glass-bg); border:1.5px solid var(--glass-border);
-  border-radius:var(--radius); box-shadow:var(--shadow); backdrop-filter:blur(14px);
-  display:flex; flex-direction:column; overflow:hidden;
-  animation:slideUp .35s cubic-bezier(.16,1,.3,1); max-height:92vh;
-}
-.game-header { display:flex; align-items:center; justify-content:space-between; padding:.65rem 1rem; border-bottom:1px solid rgba(180,140,80,.2); background:rgba(255,248,235,.5); flex-shrink:0; }
-.game-header h3 { font-size:.95rem; font-weight:700; color:var(--warm-dk); }
-.game-tabs { display:flex; gap:.3rem; padding:.5rem .7rem; border-bottom:1px solid rgba(180,140,80,.15); flex-shrink:0; flex-wrap:wrap; }
-.game-tab { padding:.32rem .75rem; border-radius:8px; border:1.5px solid rgba(180,140,80,.25); background:transparent; color:var(--warm-mid); font-size:.78rem; cursor:pointer; transition:all .18s; font-family:var(--font); }
-.game-tab.active, .game-tab:hover { background:linear-gradient(135deg,var(--terra),var(--terra2)); color:#fff; border-color:transparent; }
-#game-canvas-container { overflow:auto; display:flex; justify-content:center; align-items:flex-start; padding:.5rem; flex:1; min-height:0; }
-#game-canvas { display:block; max-width:100%; }
-.game-status-bar { text-align:center; padding:.4rem; font-size:.82rem; color:var(--warm-mid); border-top:1px solid rgba(180,140,80,.15); background:rgba(255,248,235,.5); flex-shrink:0; }
-
 /* ── AR Overlay ─────────────────────────────────────────── */
 #ar-overlay {
   position:fixed; inset:0; z-index:500;
@@ -308,9 +291,6 @@ html, body { width:100%; height:100%; overflow:hidden; background:#120e0a; font-
 /* ── Responsive ─────────────────────────────────────────── */
 @media (max-width:600px) {
   #chat-panel { width:calc(100vw - 1.6rem); right:.8rem; }
-  #game-panel { width:calc(100vw - 1rem); }
   .avatar-options { gap:.7rem; }
-  .game-tabs { gap:.2rem; }
-  .game-tab { padding:.28rem .55rem; font-size:.72rem; }
   #nav-hint span:last-child { display:none; }
 }

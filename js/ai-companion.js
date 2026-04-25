@@ -317,8 +317,20 @@ export class AICompanion {
   /**
    * Show a speech bubble above the companion. Pass null/empty to hide.
    * The bubble fades in/out smoothly and is billboarded toward the camera.
+   *
+   * @param {string} text          Bubble text. Supports '\n' for line breaks.
+   * @param {number} [duration]    Optional ms to keep the bubble up before
+   *                               auto-hiding. If omitted, scales with the
+   *                               text length so short quips dismiss quickly
+   *                               and longer bilingual lines stay readable.
    */
-  say(text) {
+  say(text, duration) {
+    // Cancel any pending auto-hide from a previous utterance so back-to-back
+    // calls don't fight each other.
+    if (this._sayTimer) {
+      clearTimeout(this._sayTimer);
+      this._sayTimer = null;
+    }
     if (!text) { this.hideBubble(); return; }
     this._drawBubbleText(text);
     if (this.bubble) {
@@ -327,9 +339,25 @@ export class AICompanion {
     }
     this.startSpeaking();
     this.setEmotion('happy');
+
+    // Heuristic: 1.8s base + ~70ms per visible character, capped at 7s.
+    // This roughly matches a comfortable reading pace for bilingual lines
+    // ("好棋！ / Nice move!" ≈ 2.4s, longer multi-line greetings ≈ 5–7s).
+    if (typeof duration !== 'number') {
+      const len = text.replace(/\s+/g, '').length;
+      duration = Math.min(7000, Math.max(2200, 1800 + len * 70));
+    }
+    this._sayTimer = setTimeout(() => {
+      this._sayTimer = null;
+      this.hideBubble();
+    }, duration);
   }
 
   hideBubble() {
+    if (this._sayTimer) {
+      clearTimeout(this._sayTimer);
+      this._sayTimer = null;
+    }
     this.bubbleTargetOpacity = 0;
     this.stopSpeaking();
   }
