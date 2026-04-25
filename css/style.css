@@ -288,6 +288,188 @@ html, body { width:100%; height:100%; overflow:hidden; background:#120e0a; font-
 @keyframes pulse   { 0%,100%{transform:scale(1);opacity:1} 50%{transform:scale(1.12);opacity:.75} }
 @keyframes bounce  { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
 
+/* ── Home Theater overlay ───────────────────────────────────
+   Theatrical dark surround so the iframe content reads as the
+   "screen". Hidden by default; class .open fades it in. */
+#home-theater-overlay {
+  position: fixed; inset: 0; z-index: 9000;
+  display: none;
+  font-family: var(--font);
+}
+#home-theater-overlay.open { display: flex; animation: fadeIn .25s ease both; }
+
+#home-theater-overlay .ht-backdrop {
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse at center, rgba(20,16,28,.78), rgba(8,6,12,.94));
+  backdrop-filter: blur(6px);
+}
+
+#home-theater-overlay .ht-window {
+  position: relative;
+  margin: auto;
+  width: min(96vw, 1280px);
+  height: min(94vh, 800px);
+  background: #15131e;
+  color: #f1ecff;
+  border-radius: 18px;
+  box-shadow:
+    0 30px 80px rgba(0,0,0,.55),
+    0 0 0 1px rgba(255,255,255,.05),
+    inset 0 0 60px rgba(108,123,255,.06);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  animation: slideUp .3s ease both;
+}
+
+#home-theater-overlay .ht-header {
+  display: flex; align-items: center; gap: .9rem;
+  padding: .8rem 1rem;
+  background: linear-gradient(180deg,#1c1a28,#15131e);
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+
+#home-theater-overlay .ht-tabs {
+  display: flex; gap: .35rem;
+  background: rgba(255,255,255,.04);
+  padding: .25rem;
+  border-radius: 999px;
+}
+#home-theater-overlay .ht-tab {
+  background: transparent; border: 0; color: #b9b3cf;
+  padding: .45rem 1rem; border-radius: 999px;
+  font-size: .9rem; font-weight: 600; cursor: pointer;
+  transition: background .18s ease, color .18s ease;
+}
+#home-theater-overlay .ht-tab:hover { color: #fff; }
+#home-theater-overlay .ht-tab.active {
+  background: linear-gradient(135deg,#6c7bff,#8d6cff);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(108,123,255,.4);
+}
+
+#home-theater-overlay .ht-search {
+  flex: 1; display: flex; gap: .4rem; align-items: center;
+}
+#home-theater-overlay .ht-input {
+  flex: 1;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 10px;
+  color: #f1ecff;
+  padding: .55rem .9rem;
+  font-size: .9rem;
+  outline: none;
+  transition: border-color .18s ease, background .18s ease;
+}
+#home-theater-overlay .ht-input:focus {
+  border-color: rgba(108,123,255,.55);
+  background: rgba(255,255,255,.08);
+}
+#home-theater-overlay .ht-input::placeholder { color: #7a7595; }
+#home-theater-overlay .ht-go {
+  background: linear-gradient(135deg,#6c7bff,#8d6cff);
+  border: 0; color: #fff;
+  padding: .55rem 1.1rem;
+  border-radius: 10px;
+  font-weight: 600; cursor: pointer;
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+#home-theater-overlay .ht-go:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(108,123,255,.45);
+}
+
+#home-theater-overlay .ht-close {
+  background: rgba(255,255,255,.06);
+  border: 0; color: #f1ecff;
+  width: 2.1rem; height: 2.1rem;
+  border-radius: 50%; cursor: pointer;
+  font-size: 1.25rem; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s ease, transform .15s ease;
+}
+#home-theater-overlay .ht-close:hover {
+  background: #ff5566; transform: rotate(90deg);
+}
+
+#home-theater-overlay .ht-main {
+  flex: 1; display: flex; min-height: 0;
+}
+#home-theater-overlay .ht-side {
+  width: 240px;
+  background: rgba(0,0,0,.25);
+  border-right: 1px solid rgba(255,255,255,.05);
+  display: flex; flex-direction: column;
+  padding: 1rem .8rem;
+  gap: .5rem;
+  overflow-y: auto;
+}
+#home-theater-overlay .ht-side-head {
+  font-size: .72rem; letter-spacing: .12em; text-transform: uppercase;
+  color: #7a7595; padding: .2rem .3rem .4rem;
+}
+#home-theater-overlay .ht-list {
+  display: flex; flex-direction: column; gap: .35rem;
+}
+#home-theater-overlay .ht-channel {
+  text-align: left;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.06);
+  border-radius: 10px;
+  color: #e8e3ff;
+  padding: .6rem .75rem;
+  font-size: .88rem;
+  cursor: pointer;
+  transition: background .15s ease, transform .15s ease, border-color .15s ease;
+  text-decoration: none;
+  display: block;
+}
+#home-theater-overlay .ht-channel:hover {
+  background: rgba(108,123,255,.18);
+  border-color: rgba(108,123,255,.4);
+  transform: translateX(2px);
+}
+#home-theater-overlay .ht-channel.ht-channel-link {
+  margin-top: .6rem;
+  font-weight: 600;
+  color: #b6c0ff;
+  border-style: dashed;
+}
+
+#home-theater-overlay .ht-stage {
+  flex: 1;
+  background: #050308;
+  display: flex; flex-direction: column;
+  min-width: 0;
+}
+#home-theater-overlay .ht-title {
+  padding: .65rem 1.1rem;
+  font-size: .92rem; font-weight: 600;
+  color: #cfc8ee;
+  border-bottom: 1px solid rgba(255,255,255,.05);
+  background: linear-gradient(180deg,#15131e,#0c0a14);
+}
+#home-theater-overlay .ht-frame-wrap {
+  flex: 1; position: relative;
+  background: #000;
+  /* Subtle bias-light glow that mimics a real home-theater rig. */
+  box-shadow:
+    inset 0 0 80px rgba(108,123,255,.12),
+    inset 0 0 200px rgba(255,80,120,.05);
+}
+#home-theater-overlay .ht-frame {
+  width: 100%; height: 100%; border: 0;
+  display: block;
+  background: #000;
+}
+
+@media (max-width:760px) {
+  #home-theater-overlay .ht-window { height: 96vh; border-radius: 0; }
+  #home-theater-overlay .ht-header { flex-wrap: wrap; }
+  #home-theater-overlay .ht-search { order: 3; flex-basis: 100%; }
+  #home-theater-overlay .ht-side { display: none; }
+}
+
 /* ── Responsive ─────────────────────────────────────────── */
 @media (max-width:600px) {
   #chat-panel { width:calc(100vw - 1.6rem); right:.8rem; }

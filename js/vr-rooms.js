@@ -3,7 +3,6 @@
  */
 import * as THREE from 'three';
 import { AICompanion } from './ai-companion.js';
-import { VRVideoPanel } from './vr-interactive.js';
 import { mountTripoModel } from './tripo-loader.js';
 
 // ============================================================
@@ -221,7 +220,7 @@ class ChatVRRoom extends VRRoom {
     // rotationY = -π/2    → 物体正面朝 +X（朝向右侧）
     // rotationY = +π/2    → 物体正面朝 -X（朝向左侧）
     //
-    // ����家从 z=+9 入场���朝 -Z 走。所以��望玩家看到正面的物件用 π，
+    // ����家从 z=+9 入场����朝 -Z 走。所以��望玩家看到正面的物件用 π，
     // 朝向沙发/壁炉那侧（-Z）的物件用 0。
 
     // ── 地毯（用 PlaneGeometry + Canvas 纹理，确保完全平铺地面）─
@@ -616,7 +615,7 @@ class ChatVRRoom extends VRRoom {
     return new THREE.CanvasTexture(c);
   }
 
-  // ── 火焰 / 落地灯 flicker ─────���������─────────────────────
+  // ── 火焰 / 落地灯 flicker ─────�����������─────────────────────
   update(delta, camWorld) {
     super.update(delta, camWorld);
     const t = performance.now() * 0.001;
@@ -1010,39 +1009,27 @@ class LeisureVRRoom extends VRRoom {
     this._buildRoom(18, 16, 6, 0x1a1a1a, 0x12121a);
     this._buildAICompanion(-3, 0.5, 1, 0xC0A0D8);
     this._buildExitDoor(0, 0, 7);
-    
-    // Theater ambient lighting
-    const ambLight = new THREE.AmbientLight(0x6060a0, 0.15);
-    this.group.add(ambLight);
-    
-    const leftLight = new THREE.PointLight(0x6040a0, 0.5, 10);
+
+    // ── Theater ambient lighting ──────────────────────────────
+    // Slightly brighter than before so the seats and side-table
+    // models register without a video being projected on the screen.
+    this.group.add(new THREE.AmbientLight(0x7a7aa8, 0.22));
+
+    const leftLight = new THREE.PointLight(0x6040a0, 0.55, 11);
     leftLight.position.set(-8, 3, 0);
     this.group.add(leftLight);
-    
-    const rightLight = new THREE.PointLight(0x4060a0, 0.5, 10);
+
+    const rightLight = new THREE.PointLight(0x4060a0, 0.55, 11);
     rightLight.position.set(8, 3, 0);
     this.group.add(rightLight);
-    
-    // Movie screen with frame
-    const frameMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.5 });
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(9, 5.5, 0.2), frameMat);
-    frame.position.set(0, 3, -7.8);
-    this.group.add(frame);
-    
-    const screenMat = new THREE.MeshStandardMaterial({ 
-      color: 0x2a2a3a, 
-      emissive: 0x4040FF, 
-      emissiveIntensity: 0.3 
-    });
-    const screen = new THREE.Mesh(new THREE.PlaneGeometry(8.5, 5), screenMat);
-    screen.position.set(0, 3, -7.7);
-    this.group.add(screen);
-    
-    // Screen glow
-    const screenLight = new THREE.PointLight(0x6666FF, 0.6, 10);
-    screenLight.position.set(0, 3, -5);
-    this.group.add(screenLight);
-    
+
+    // ── Home theater rig ──────────────────────────────────────
+    // Wide acoustic-bezel frame with a "bias light" plane glowing
+    // behind it on the wall (mimics a real home-cinema setup), the
+    // big interactive screen mesh itself, plus a subwoofer + two
+    // tower speakers flanking the wall.
+    this._buildHomeTheater();
+
     // Cinema seats (cached → 1 fetch for all 10 seats).
     for (let row = 0; row < 2; row++) {
       for (let col = -2; col <= 2; col++) {
@@ -1062,26 +1049,206 @@ class LeisureVRRoom extends VRRoom {
     // Popcorn bucket on top of the side table (~0.85m high).
     mountTripoModel(this.group, 'popcorn_bucket',
       { position: [7, 0.85, 2], targetSize: 0.45, yAlign: 'bottom' });
-    
-    // Video panel on the big screen
-    this.videoPanel = new VRVideoPanel(this.group, {
-      position: new THREE.Vector3(0, 3, -7.5),
-      width: 8,
-      height: 4.5,
-      onInteract: (action, data) => {
-        if (this.companion && action === 'play' && data.playing) {
-          this.companion.setExpression('happy');
-        }
-      }
-    });
-    this.interactables.push(...this.videoPanel.getInteractables());
-    
+
     this.onReady();
+  }
+
+  // ── Build the wall-mounted screen, frame, bias-light and speakers.
+  _buildHomeTheater() {
+    // Geometry constants — keeps the wall composition consistent.
+    const wallZ = -7.85;          // outer face of back wall
+    const screenW = 9.6, screenH = 5.4;     // 16:9-ish (16:9 = 9.6:5.4)
+    const frameW  = screenW + 0.7, frameH = screenH + 0.7;
+    const screenY = 3.1;
+
+    // Bias light — a soft glow PLANE behind the bezel painted on
+    // the back wall. Reads as the warm wall halo around modern TVs.
+    const biasMat = new THREE.MeshBasicMaterial({
+      color: 0x6c7bff, transparent: true, opacity: 0.35,
+    });
+    const bias = new THREE.Mesh(
+      new THREE.PlaneGeometry(frameW + 1.6, frameH + 1.6),
+      biasMat,
+    );
+    bias.position.set(0, screenY, wallZ + 0.005);
+    this.group.add(bias);
+
+    // Bezel — thin matte-black frame around the screen.
+    const frameMat = new THREE.MeshStandardMaterial({
+      color: 0x0d0d11, roughness: 0.55, metalness: 0.15,
+    });
+    const frame = new THREE.Mesh(
+      new THREE.BoxGeometry(frameW, frameH, 0.18), frameMat,
+    );
+    frame.position.set(0, screenY, wallZ + 0.06);
+    this.group.add(frame);
+
+    // The screen itself — a CanvasTexture idle slate that says
+    // "Click to browse Bilibili / YouTube". When the player clicks
+    // we hand off to the HTML overlay (HomeTheater.open()).
+    const screenTex = this._makeHomeTheaterIdleTexture();
+    const screenMat = new THREE.MeshStandardMaterial({
+      map: screenTex,
+      emissive: 0xffffff,
+      emissiveMap: screenTex,
+      emissiveIntensity: 0.85,
+      roughness: 0.95, metalness: 0,
+    });
+    const screen = new THREE.Mesh(
+      new THREE.PlaneGeometry(screenW, screenH), screenMat,
+    );
+    screen.position.set(0, screenY, wallZ + 0.16);
+    screen.userData.onClick = () => {
+      // Desktop / pointer: pop the iframe overlay. In immersive VR
+      // the DOM is hidden by the compositor, so we just pulse the
+      // companion as feedback that the click was received.
+      if (window.HomeTheater?.open) window.HomeTheater.open();
+      if (this.companion) this.companion.setExpression('happy');
+    };
+    this.group.add(screen);
+    this.interactables.push(screen);
+    this._theaterScreen = screen;
+
+    // Glow accent in front of the screen — soft bluish wash on the
+    // first row of seats so the room reads as "powered on".
+    const screenLight = new THREE.PointLight(0x8a96ff, 0.7, 12, 1.6);
+    screenLight.position.set(0, screenY, wallZ + 3.5);
+    this.group.add(screenLight);
+
+    // ── Speakers ──────────────────────────────────────────────
+    const speakerMat = new THREE.MeshStandardMaterial({
+      color: 0x111114, roughness: 0.7, metalness: 0.18,
+    });
+    const grilleMat = new THREE.MeshStandardMaterial({
+      color: 0x1d1d23, roughness: 0.95, metalness: 0,
+    });
+    const buildTower = (x) => {
+      const tower = new THREE.Mesh(
+        new THREE.BoxGeometry(0.55, 2.4, 0.45), speakerMat,
+      );
+      tower.position.set(x, 1.2, wallZ + 0.4);
+      this.group.add(tower);
+
+      // Three driver "cones" — concentric matte rings.
+      const cones = [
+        { y: 1.95, r: 0.10 },
+        { y: 1.55, r: 0.15 },
+        { y: 0.95, r: 0.20 },
+      ];
+      for (const c of cones) {
+        const cone = new THREE.Mesh(
+          new THREE.CircleGeometry(c.r, 24), grilleMat,
+        );
+        cone.position.set(x, c.y, wallZ + 0.63);
+        this.group.add(cone);
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(c.r * 0.55, c.r * 0.7, 24),
+          new THREE.MeshStandardMaterial({
+            color: 0x2a2a33, roughness: 0.9, metalness: 0,
+          }),
+        );
+        ring.position.set(x, c.y, wallZ + 0.64);
+        this.group.add(ring);
+      }
+    };
+    buildTower(-(frameW / 2 + 0.85));
+    buildTower( (frameW / 2 + 0.85));
+
+    // Subwoofer — squat box centred under the screen.
+    const sub = new THREE.Mesh(
+      new THREE.BoxGeometry(1.3, 0.8, 0.6), speakerMat,
+    );
+    sub.position.set(0, 0.4, wallZ + 0.5);
+    this.group.add(sub);
+    const subCone = new THREE.Mesh(
+      new THREE.CircleGeometry(0.28, 28), grilleMat,
+    );
+    subCone.position.set(0, 0.4, wallZ + 0.81);
+    this.group.add(subCone);
+
+    // Stash refs for the bias-light breathing animation.
+    this._theaterBias = biasMat;
+  }
+
+  // Idle slate drawn into a CanvasTexture so the screen looks like a
+  // proper "Apple TV / smart-TV" launcher even before the iframe
+  // overlay opens.
+  _makeHomeTheaterIdleTexture() {
+    const W = 1024, H = 576;        // 16:9
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Gradient backdrop — deep navy → indigo so the screen feels alive.
+    const g = ctx.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, '#0e0a22');
+    g.addColorStop(1, '#241546');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // Soft purple aurora glow centre.
+    const r = ctx.createRadialGradient(W / 2, H / 2, 30, W / 2, H / 2, W * 0.55);
+    r.addColorStop(0, 'rgba(140,120,255,0.50)');
+    r.addColorStop(1, 'rgba(140,120,255,0.0)');
+    ctx.fillStyle = r;
+    ctx.fillRect(0, 0, W, H);
+
+    // Headline.
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.font = '700 96px "Segoe UI","PingFang SC",Arial,sans-serif';
+    ctx.fillText('HOME THEATER', W / 2, H / 2 - 30);
+    ctx.font = '500 56px "Segoe UI","PingFang SC",Arial,sans-serif';
+    ctx.fillStyle = 'rgba(220, 215, 255, 0.85)';
+    ctx.fillText('家庭影院', W / 2, H / 2 + 38);
+
+    // Logo pill row: Bilibili + YouTube placeholders.
+    const pillY = H * 0.78, pillH = 70, pillR = pillH / 2;
+    const drawPill = (x, label, fillStart, fillEnd) => {
+      const wPill = 280;
+      const grad = ctx.createLinearGradient(x - wPill / 2, 0, x + wPill / 2, 0);
+      grad.addColorStop(0, fillStart); grad.addColorStop(1, fillEnd);
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(x - wPill / 2 + pillR, pillY);
+      ctx.arc(x - wPill / 2 + pillR, pillY + pillH / 2, pillR, -Math.PI / 2, Math.PI / 2, true);
+      ctx.lineTo(x + wPill / 2 - pillR, pillY + pillH);
+      ctx.arc(x + wPill / 2 - pillR, pillY + pillH / 2, pillR,  Math.PI / 2, -Math.PI / 2, true);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = '700 30px "Segoe UI",Arial,sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, x, pillY + pillH / 2 + 2);
+      ctx.textBaseline = 'alphabetic';
+    };
+    drawPill(W / 2 - 170, 'Bilibili', '#FF7BB5', '#FB9C3C');
+    drawPill(W / 2 + 170, 'YouTube', '#FF4040', '#C50000');
+
+    // Footer hint.
+    ctx.fillStyle = 'rgba(220, 215, 255, 0.6)';
+    ctx.font = '400 26px "Segoe UI","PingFang SC",Arial,sans-serif';
+    ctx.fillText('Click the screen to browse · 点击屏幕开始浏览', W / 2, H - 32);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
   }
 
   update(delta) {
     super.update(delta);
-    if (this.videoPanel) this.videoPanel.update(delta);
+    // Gentle bias-light breathing so the wall halo feels alive.
+    if (this._theaterBias) {
+      const t = performance.now() * 0.001;
+      this._theaterBias.opacity = 0.30 + Math.sin(t * 0.8) * 0.07;
+    }
+  }
+
+  // Close the iframe overlay if the player walks back to the hub.
+  exit() {
+    super.exit();
+    if (window.HomeTheater?.close) window.HomeTheater.close();
   }
 
   getSpawnPoint() {
