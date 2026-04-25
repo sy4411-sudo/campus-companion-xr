@@ -2559,21 +2559,25 @@ class GamesVRRoom extends VRRoom {
   _buildChessAssets() {
     const c = this._chess;
 
-    // Materials. The board art is cream + walnut, so pieces use a
-    // slightly off-white marble and a deep onyx — both with a touch of
-    // metalness so they catch the room's neon lights nicely.
+    // Materials — matte / frosted (磨砂) finish. Very high roughness
+    // and zero metalness so highlights are diffuse blobs rather than
+    // sharp speculars; the pieces read as solid silhouettes from a
+    // distance, which is what matters most for a 13m-wide floor board.
+    // Colours are chosen for contrast against the cream / walnut
+    // checkerboard: a warm ivory for white, a warm charcoal for black.
     c.whiteMat = new THREE.MeshStandardMaterial({
-      color: 0xF1E5C7, roughness: 0.35, metalness: 0.18,
+      color: 0xEFE6CF, roughness: 0.94, metalness: 0.0,
     });
     c.blackMat = new THREE.MeshStandardMaterial({
-      color: 0x1A1310, roughness: 0.32, metalness: 0.22,
+      color: 0x2A2018, roughness: 0.92, metalness: 0.0,
     });
-    // Subtle accent bands on collars / crowns so silhouettes pop.
+    // Accent material — slightly different shade for crown rings,
+    // cross arms, knight eyes etc. Same matte treatment.
     c.whiteAccent = new THREE.MeshStandardMaterial({
-      color: 0xC8B388, roughness: 0.5, metalness: 0.3,
+      color: 0xC9B98F, roughness: 0.95, metalness: 0.0,
     });
     c.blackAccent = new THREE.MeshStandardMaterial({
-      color: 0x2A2018, roughness: 0.5, metalness: 0.3,
+      color: 0x3A2E22, roughness: 0.95, metalness: 0.0,
     });
 
     // Build piece factory closures. Each factory builds a Group with
@@ -2618,186 +2622,203 @@ class GamesVRRoom extends VRRoom {
     return color === 'white' ? this._chess.whiteAccent : this._chess.blackAccent;
   }
 
-  // Common pedestal — wide ring at the bottom that all pieces share.
-  // Returns a list of Vector2 points usable as the start of a lathe profile.
+  // Common pedestal — Staunton-style bell base. Heights and radii are
+  // tuned for a 1.53m board cell: base radius ≈ 0.27 (≈ 0.35 × cell),
+  // total bell height ≈ 0.14m. Pieces stack their column on top of
+  // this so the visual mass at the bottom reads from across the room.
   _chessPedestalPoints(topR, neckY) {
     return [
       new THREE.Vector2(0.001, 0),
-      new THREE.Vector2(0.30,  0),
-      new THREE.Vector2(0.32,  0.012),
-      new THREE.Vector2(0.30,  0.04),
-      new THREE.Vector2(0.22,  0.06),
+      new THREE.Vector2(0.27,  0),
+      new THREE.Vector2(0.27,  0.020),
+      new THREE.Vector2(0.24,  0.052),
+      new THREE.Vector2(0.18,  0.080),
+      new THREE.Vector2(0.155, 0.110),
       new THREE.Vector2(topR,  neckY),
     ];
   }
 
+  // ── Pawn (height ≈ 0.70m on a 1.53m square) ─────────────────
   _buildPawnMesh(color) {
     const profile = [
-      ...this._chessPedestalPoints(0.13, 0.10),
-      new THREE.Vector2(0.13, 0.18),
-      new THREE.Vector2(0.16, 0.22),  // collar
-      new THREE.Vector2(0.10, 0.25),
-      new THREE.Vector2(0.14, 0.28),  // head base
-      new THREE.Vector2(0.14, 0.34),
-      new THREE.Vector2(0.10, 0.40),
-      new THREE.Vector2(0.001, 0.42),
+      ...this._chessPedestalPoints(0.135, 0.14),
+      new THREE.Vector2(0.115, 0.24),  // slim column
+      new THREE.Vector2(0.155, 0.28),  // collar bulge
+      new THREE.Vector2(0.085, 0.32),  // collar dip
+      new THREE.Vector2(0.140, 0.40),  // shoulder of head
+      new THREE.Vector2(0.155, 0.48),  // head equator
+      new THREE.Vector2(0.135, 0.56),
+      new THREE.Vector2(0.080, 0.64),
+      new THREE.Vector2(0.001, 0.70),
     ];
-    const geo = new THREE.LatheGeometry(profile, 28);
+    const geo = new THREE.LatheGeometry(profile, 32);
     return this._wrapPiece(new THREE.Mesh(geo, this._matFor(color)));
   }
 
+  // ── Rook (height ≈ 0.80m incl. crenellations) ───────────────
   _buildRookMesh(color) {
     const profile = [
-      ...this._chessPedestalPoints(0.18, 0.10),
-      new THREE.Vector2(0.18, 0.30),
-      new THREE.Vector2(0.21, 0.34),  // shoulder
-      new THREE.Vector2(0.21, 0.40),  // top edge
-      new THREE.Vector2(0.001, 0.40), // close top
+      ...this._chessPedestalPoints(0.165, 0.14),
+      new THREE.Vector2(0.155, 0.30),  // waist taper
+      new THREE.Vector2(0.155, 0.50),  // shaft
+      new THREE.Vector2(0.190, 0.55),  // shoulder ring
+      new THREE.Vector2(0.220, 0.60),  // top widens
+      new THREE.Vector2(0.220, 0.68),  // top edge
+      new THREE.Vector2(0.001, 0.68),  // close
     ];
-    const geo = new THREE.LatheGeometry(profile, 28);
+    const geo = new THREE.LatheGeometry(profile, 32);
     const grp = new THREE.Group();
     grp.add(new THREE.Mesh(geo, this._matFor(color)));
 
-    // 4 crenellation notches around the top: stand 4 small cubes on
-    // the rim with 90° gaps so the "battlements" silhouette reads.
-    const battle = new THREE.BoxGeometry(0.10, 0.10, 0.10);
-    const battleMat = this._accentFor(color);
+    // 4 crenellation cubes around the top so the battlement reads.
+    const battle = new THREE.BoxGeometry(0.11, 0.12, 0.11);
+    const battleMat = this._matFor(color);
     for (let i = 0; i < 4; i++) {
       const a = (i * Math.PI) / 2;
       const m = new THREE.Mesh(battle, battleMat);
-      m.position.set(Math.cos(a) * 0.16, 0.45, Math.sin(a) * 0.16);
+      m.position.set(Math.cos(a) * 0.18, 0.74, Math.sin(a) * 0.18);
+      m.rotation.y = a;
       grp.add(m);
     }
     return this._wrapPiece(grp);
   }
 
+  // ── Bishop (height ≈ 0.95m) ─────────────────────────────────
   _buildBishopMesh(color) {
     const profile = [
-      ...this._chessPedestalPoints(0.15, 0.10),
-      new THREE.Vector2(0.13, 0.20),
-      new THREE.Vector2(0.16, 0.26),  // collar bulge
-      new THREE.Vector2(0.10, 0.30),
-      new THREE.Vector2(0.13, 0.40),  // body
-      new THREE.Vector2(0.05, 0.50),  // mitre taper
-      new THREE.Vector2(0.07, 0.55),  // tip ball
-      new THREE.Vector2(0.001, 0.60),
+      ...this._chessPedestalPoints(0.135, 0.14),
+      new THREE.Vector2(0.120, 0.30),  // slim column
+      new THREE.Vector2(0.165, 0.36),  // collar bulge
+      new THREE.Vector2(0.085, 0.42),  // collar dip
+      new THREE.Vector2(0.155, 0.55),  // body
+      new THREE.Vector2(0.135, 0.68),  // narrowing toward mitre
+      new THREE.Vector2(0.080, 0.78),  // mitre taper
+      new THREE.Vector2(0.060, 0.86),  // tip
+      new THREE.Vector2(0.075, 0.90),  // tip ball
+      new THREE.Vector2(0.001, 0.95),
     ];
-    const geo = new THREE.LatheGeometry(profile, 28);
+    const geo = new THREE.LatheGeometry(profile, 32);
     const grp = new THREE.Group();
     grp.add(new THREE.Mesh(geo, this._matFor(color)));
 
-    // The classic mitre slit — a thin black box across the top.
+    // Classic mitre slit across the top, in the contrasting accent.
     const slit = new THREE.Mesh(
-      new THREE.BoxGeometry(0.16, 0.02, 0.04),
-      this._accentFor(color),
+      new THREE.BoxGeometry(0.18, 0.025, 0.06),
+      this._accentFor(color === 'white' ? 'black' : 'white'),
     );
-    slit.position.set(0, 0.46, 0);
+    slit.position.set(0, 0.84, 0);
+    slit.rotation.y = Math.PI / 4;
     grp.add(slit);
     return this._wrapPiece(grp);
   }
 
+  // ── Queen (height ≈ 1.10m, tip pearl at 1.06) ───────────────
   _buildQueenMesh(color) {
     const profile = [
-      ...this._chessPedestalPoints(0.17, 0.10),
-      new THREE.Vector2(0.15, 0.22),
-      new THREE.Vector2(0.19, 0.30),  // collar
-      new THREE.Vector2(0.13, 0.36),
-      new THREE.Vector2(0.17, 0.50),  // body
-      new THREE.Vector2(0.21, 0.58),  // crown base disk
-      new THREE.Vector2(0.21, 0.62),
-      new THREE.Vector2(0.001, 0.62),
+      ...this._chessPedestalPoints(0.155, 0.14),
+      new THREE.Vector2(0.135, 0.30),
+      new THREE.Vector2(0.180, 0.36),  // collar
+      new THREE.Vector2(0.100, 0.42),
+      new THREE.Vector2(0.165, 0.65),  // body
+      new THREE.Vector2(0.200, 0.85),  // crown rise
+      new THREE.Vector2(0.220, 0.92),  // crown rim outer
+      new THREE.Vector2(0.210, 0.98),
+      new THREE.Vector2(0.001, 0.98),
     ];
-    const geo = new THREE.LatheGeometry(profile, 32);
+    const geo = new THREE.LatheGeometry(profile, 36);
     const grp = new THREE.Group();
     grp.add(new THREE.Mesh(geo, this._matFor(color)));
 
-    // 8 small spheres ringing the crown rim.
-    const pearl = new THREE.SphereGeometry(0.038, 12, 8);
-    const pearlMat = this._accentFor(color);
+    // 8 pearls ringing the crown.
+    const pearl = new THREE.SphereGeometry(0.045, 14, 10);
+    const pearlMat = this._matFor(color);
     for (let i = 0; i < 8; i++) {
       const a = (i * Math.PI * 2) / 8;
       const m = new THREE.Mesh(pearl, pearlMat);
-      m.position.set(Math.cos(a) * 0.18, 0.66, Math.sin(a) * 0.18);
+      m.position.set(Math.cos(a) * 0.20, 1.02, Math.sin(a) * 0.20);
       grp.add(m);
     }
-    // Central spire pearl
-    const top = new THREE.Mesh(new THREE.SphereGeometry(0.05, 14, 10), pearlMat);
-    top.position.set(0, 0.69, 0);
+    // Central spire pearl.
+    const top = new THREE.Mesh(new THREE.SphereGeometry(0.060, 16, 12), pearlMat);
+    top.position.set(0, 1.06, 0);
     grp.add(top);
     return this._wrapPiece(grp);
   }
 
+  // ── King (height ≈ 1.22m incl. cross) ───────────────────────
   _buildKingMesh(color) {
     const profile = [
-      ...this._chessPedestalPoints(0.18, 0.10),
-      new THREE.Vector2(0.16, 0.22),
-      new THREE.Vector2(0.20, 0.30),  // collar
-      new THREE.Vector2(0.14, 0.36),
-      new THREE.Vector2(0.18, 0.55),  // body
-      new THREE.Vector2(0.22, 0.62),  // crown base
-      new THREE.Vector2(0.22, 0.66),
-      new THREE.Vector2(0.001, 0.66),
+      ...this._chessPedestalPoints(0.165, 0.14),
+      new THREE.Vector2(0.145, 0.30),
+      new THREE.Vector2(0.195, 0.36),  // collar
+      new THREE.Vector2(0.105, 0.42),
+      new THREE.Vector2(0.180, 0.65),  // body
+      new THREE.Vector2(0.210, 0.90),  // crown rise
+      new THREE.Vector2(0.230, 0.98),  // crown wide
+      new THREE.Vector2(0.225, 1.04),
+      new THREE.Vector2(0.001, 1.04),
     ];
-    const geo = new THREE.LatheGeometry(profile, 32);
+    const geo = new THREE.LatheGeometry(profile, 36);
     const grp = new THREE.Group();
     grp.add(new THREE.Mesh(geo, this._matFor(color)));
 
-    // Cross on top — 2 thin boxes.
-    const accent = this._accentFor(color);
-    const vert = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.20, 0.05), accent);
-    vert.position.set(0, 0.78, 0);
+    // Cross on top — solid same-material so it reads at distance.
+    const accent = this._matFor(color);
+    const vert = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.20, 0.055), accent);
+    vert.position.set(0, 1.14, 0);
     grp.add(vert);
-    const horiz = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.05, 0.05), accent);
-    horiz.position.set(0, 0.80, 0);
+    const horiz = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.055, 0.055), accent);
+    horiz.position.set(0, 1.10, 0);
     grp.add(horiz);
     return this._wrapPiece(grp);
   }
 
+  // ── Knight (head silhouette extrusion, total height ≈ 0.92m) ─
   _buildKnightMesh(color) {
-    // Lathed pedestal so the base matches every other piece.
+    // Lathed pedestal that matches every other piece.
     const baseProfile = [
-      ...this._chessPedestalPoints(0.17, 0.10),
-      new THREE.Vector2(0.18, 0.18),
-      new THREE.Vector2(0.001, 0.18),
+      ...this._chessPedestalPoints(0.155, 0.14),
+      new THREE.Vector2(0.170, 0.20),
+      new THREE.Vector2(0.001, 0.20),
     ];
-    const baseGeo = new THREE.LatheGeometry(baseProfile, 28);
+    const baseGeo = new THREE.LatheGeometry(baseProfile, 32);
     const grp = new THREE.Group();
     grp.add(new THREE.Mesh(baseGeo, this._matFor(color)));
 
-    // Stylised horse-head silhouette extruded along z. Built in xy
-    // with the snout pointing -x; we orient pieces by rotating the
-    // group later so white/black both face their opponent.
+    // Stylised horse-head silhouette extruded along z. Y range 0.20 → 0.92,
+    // so the head sits directly on the pedestal lip and reaches near
+    // bishop height. Built in xy with the snout pointing -x.
     const s = new THREE.Shape();
-    s.moveTo( 0.20, 0.18);    // start at back-bottom of head
-    s.lineTo(-0.10, 0.18);    // front-bottom (under chest)
-    s.lineTo(-0.18, 0.26);    // throat
-    s.lineTo(-0.22, 0.36);    // chin
-    s.lineTo(-0.20, 0.42);    // mouth
-    s.lineTo(-0.10, 0.46);    // nose bridge
-    s.lineTo(-0.04, 0.54);    // forehead
-    s.lineTo( 0.00, 0.62);    // forward ear tip
-    s.lineTo( 0.06, 0.54);    // dip between ears
-    s.lineTo( 0.10, 0.60);    // back ear tip
-    s.lineTo( 0.16, 0.54);    // back of head
-    s.lineTo( 0.20, 0.30);    // mane back curve
-    s.lineTo( 0.20, 0.18);    // close
+    s.moveTo( 0.22, 0.20);    // start at back-bottom of head
+    s.lineTo(-0.12, 0.20);    // front-bottom (under chest)
+    s.lineTo(-0.22, 0.32);    // throat
+    s.lineTo(-0.28, 0.46);    // chin
+    s.lineTo(-0.26, 0.56);    // mouth
+    s.lineTo(-0.13, 0.62);    // nose bridge
+    s.lineTo(-0.05, 0.74);    // forehead
+    s.lineTo( 0.00, 0.86);    // forward ear tip
+    s.lineTo( 0.07, 0.74);    // dip between ears
+    s.lineTo( 0.12, 0.84);    // back ear tip
+    s.lineTo( 0.20, 0.74);    // back of head
+    s.lineTo( 0.24, 0.42);    // mane back curve
+    s.lineTo( 0.22, 0.20);    // close
     const headGeo = new THREE.ExtrudeGeometry(s, {
-      depth: 0.18, bevelEnabled: true,
-      bevelThickness: 0.012, bevelSize: 0.012, bevelSegments: 2,
+      depth: 0.22, bevelEnabled: true,
+      bevelThickness: 0.014, bevelSize: 0.014, bevelSegments: 2,
     });
-    headGeo.translate(0, 0, -0.09);   // centre on z-axis
+    headGeo.translate(0, 0, -0.11);   // centre on z-axis
     const head = new THREE.Mesh(headGeo, this._matFor(color));
     grp.add(head);
 
-    // Tiny eye dot for character.
+    // Tiny eye dot on each side for character (matte, contrasting tone).
     const eye = new THREE.Mesh(
-      new THREE.SphereGeometry(0.018, 8, 6),
+      new THREE.SphereGeometry(0.024, 10, 8),
       this._accentFor(color === 'white' ? 'black' : 'white'),
     );
-    eye.position.set(-0.10, 0.40, 0.10);
+    eye.position.set(-0.13, 0.56, 0.13);
     grp.add(eye);
     const eye2 = eye.clone();
-    eye2.position.z = -0.10;
+    eye2.position.z = -0.13;
     grp.add(eye2);
 
     return this._wrapPiece(grp);
@@ -2835,7 +2856,7 @@ class GamesVRRoom extends VRRoom {
     });
     const chev = new THREE.Mesh(chevGeo, chevMat);
     chev.rotation.x = Math.PI;          // tip points -y
-    chev.position.y = 0.95;             // hovers ~0.3m above tallest pieces
+    chev.position.y = 1.55;             // hovers ~0.3m above the king (tallest ≈ 1.22m)
     chev.renderOrder = 4;
     grp.add(chev);
 
@@ -2864,7 +2885,7 @@ class GamesVRRoom extends VRRoom {
     if (!c.aiCursor || c.aiCursorState === 'hidden') return;
     // Gentle bob so the chevron looks alive even when idle.
     const t = (performance.now() % 1200) / 1200;
-    c.aiCursor.userData.chev.position.y = 0.95 + Math.sin(t * Math.PI * 2) * 0.04;
+    c.aiCursor.userData.chev.position.y = 1.55 + Math.sin(t * Math.PI * 2) * 0.04;
   }
 
   // ────────────────────────────────────────────────────────────
