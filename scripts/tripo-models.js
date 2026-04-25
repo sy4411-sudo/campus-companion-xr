@@ -261,6 +261,42 @@ export const MODELS = {
       'a soft round fabric bean bag chair, vibrant colours, lounge floor seat, ' +
       'photorealistic 3D render, single isolated object',
   },
+  pinball_machine: {
+    prompt:
+      'a vintage retro pinball arcade machine, glowing colourful playfield under glass, ' +
+      'two red flippers, a tall backglass with neon star and rocket artwork and bright bulbs, ' +
+      'side flipper buttons, polished black wood cabinet with chrome trim, ' +
+      'classic 1980s arcade game-room piece, front-facing, ' +
+      'photorealistic 3D render, single isolated object',
+  },
+  dartboard_cabinet: {
+    prompt:
+      'a classic wooden dartboard cabinet with both doors open, a tournament dartboard inside, ' +
+      'six steel-tip darts tucked into the inner doors, a small chalk scoreboard on one door, ' +
+      'rich walnut wood frame with brass hinges, pub game-room wall decor, ' +
+      'photorealistic 3D render, single isolated object',
+  },
+  neon_game_sign: {
+    prompt:
+      'a glowing neon sign that reads GAME ON in bold pink and cyan glass tubing, ' +
+      'small star accents on the sides, mounted on a thin dark backing plate, ' +
+      '1980s arcade aesthetic, bright soft glow, wall art, ' +
+      'photorealistic 3D render, single isolated object on transparent background',
+  },
+  vending_machine_snacks: {
+    prompt:
+      'a retro snack and soda vending machine, transparent front window with colourful ' +
+      'packaged snacks and bottled drinks visible inside, glowing top sign, ' +
+      'red and cream painted metal cabinet, push-button keypad and coin slot, ' +
+      'classic game-room appliance, front-facing, photorealistic 3D render, single isolated object',
+  },
+  trophy_shelf: {
+    prompt:
+      'a small wooden display shelf with three golden trophy cups of varying sizes on top, ' +
+      'a couple of colourful gaming medals hanging from hooks below, dark walnut frame, ' +
+      'celebratory game-room decor, photorealistic 3D render, single composition, ' +
+      'isolated on transparent background',
+  },
 
   // ── AI companion (chat zone) ────────────────────────────────
   companion_mascot: {

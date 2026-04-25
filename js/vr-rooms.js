@@ -1195,29 +1195,64 @@ class GamesVRRoom extends VRRoom {
       }
     }
 
-    // Chairs around the table (cached → 1 fetch for all 4).
+    // Chairs around the table — every chair faces the table at origin
+    // (default Tripo front = -Z, so add π for north chair, etc.).
     [
-      [0, 0, -1.2, 0],
-      [0, 0, 1.2, Math.PI],
-      [-1.2, 0, 0, Math.PI / 2],
-      [1.2, 0, 0, -Math.PI / 2],
+      [0, 0, -1.2, Math.PI],         // north of table → face +Z (toward origin)
+      [0, 0,  1.2, 0],               // south of table → face -Z
+      [-1.2, 0, 0, -Math.PI / 2],    // west of table  → face +X
+      [ 1.2, 0, 0,  Math.PI / 2],    // east of table  → face -X
     ].forEach(([x, y, z, ry]) => {
       mountTripoModel(this.group, 'chair_blue', {
         position: [x, y, z], rotationY: ry, targetSize: 0.9, yAlign: 'bottom',
       });
     });
 
-    // Two arcade cabinets — distinct so they look different.
+    // Two arcade cabinets on the back wall — screens face the player (+Z),
+    // each cabinet tilted slightly inward toward room center.
     mountTripoModel(this.group, 'arcade_blue',
-      { position: [-6, 0, -6], rotationY: Math.PI / 8, targetSize: 2.2, yAlign: 'bottom' });
+      { position: [-6, 0, -6], rotationY: Math.PI + Math.PI / 8,
+        targetSize: 2.2, yAlign: 'bottom' });
     mountTripoModel(this.group, 'arcade_pink',
-      { position: [6, 0, -6], rotationY: -Math.PI / 8, targetSize: 2.2, yAlign: 'bottom' });
+      { position: [6, 0, -6], rotationY: Math.PI - Math.PI / 8,
+        targetSize: 2.2, yAlign: 'bottom' });
 
-    // Bean bags (cached, two slight rotations).
+    // Bean bags in the front of the room — face inward toward the action
+    // (default front = -Z, slight inward yaw so the two cushions angle in).
     mountTripoModel(this.group, 'bean_bag',
-      { position: [-4, 0, 4], rotationY: Math.PI / 5, targetSize: 1.0, yAlign: 'bottom' });
+      { position: [-4, 0, 4], rotationY: -Math.PI / 6,
+        targetSize: 1.0, yAlign: 'bottom' });
     mountTripoModel(this.group, 'bean_bag',
-      { position: [4, 0, 4], rotationY: -Math.PI / 5, targetSize: 1.0, yAlign: 'bottom' });
+      { position: [4, 0, 4], rotationY: Math.PI / 6,
+        targetSize: 1.0, yAlign: 'bottom' });
+
+    // ── New furniture (Tripo): widen the game-room vibe ──────────
+    // Pinball machine on the back wall between the arcades, faces +Z (player).
+    mountTripoModel(this.group, 'pinball_machine',
+      { position: [0, 0, -7], rotationY: Math.PI,
+        targetSize: 1.8, yAlign: 'bottom' });
+
+    // Glowing "GAME ON" neon sign high on the back wall, faces +Z.
+    mountTripoModel(this.group, 'neon_game_sign',
+      { position: [0, 3.6, -7.85], rotationY: Math.PI,
+        targetSize: 2.4, yAlign: 'center' });
+
+    // Dartboard cabinet wall-mounted on the left wall (back side),
+    // clear of the coloring game at z=0. Faces +X (room interior).
+    mountTripoModel(this.group, 'dartboard_cabinet',
+      { position: [-7.85, 1.9, -3.5], rotationY: -Math.PI / 2,
+        targetSize: 1.1, yAlign: 'center' });
+
+    // Snack & soda vending machine on the right wall near the entrance,
+    // faces -X (room interior). Sits below the gomoku game (z=0).
+    mountTripoModel(this.group, 'vending_machine_snacks',
+      { position: [7.4, 0, 5], rotationY: Math.PI / 2,
+        targetSize: 2.0, yAlign: 'bottom' });
+
+    // Trophy shelf on the left wall near the entrance, faces +X.
+    mountTripoModel(this.group, 'trophy_shelf',
+      { position: [-7.4, 0, 5], rotationY: -Math.PI / 2,
+        targetSize: 1.4, yAlign: 'bottom' });
     
     // Interactive coloring game on left wall
     this.coloringGame = new VRColoringGame(this.group, {
