@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mountTripoModel } from './tripo-loader.js';
+import { AICompanion } from './ai-companion.js';
 
 export class CampusScene {
   constructor(canvas) {
@@ -27,8 +28,21 @@ export class CampusScene {
     this.labels       = [];     // billboard labels
     this.zoneRings    = [];
     this.clickables   = [];     // desktop click targets
-    this.avatarGroup  = null;
     this.xrManager    = null;   // set by main.js after XR init
+
+    // ── Hub companion (圆圆) ─────────────────────────────────
+    // Spherical AI orb that lives in the central lobby. Replaces the
+    // old humanoid avatar + gender picker: it greets the player,
+    // tags along beside them, and announces what each zone does as
+    // the player approaches its portal.
+    this.hubCompanion       = null;
+    this._hubActive         = false;
+    this._hubGreetTimer     = null;
+    this._hubChatterTimer   = null;
+    this._hubLastSpokeAt    = 0;
+    this._hubFollowOffset   = new THREE.Vector3(1.4, -0.45, 0.6);
+    this._hubLastZoneSpoken = null;     // for proximity debounce
+    this._hubLines          = null;     // populated in _initHubCompanionLines()
 
     // Leisure cinema assets
     this.cinemaGroup  = null;
@@ -65,7 +79,7 @@ export class CampusScene {
     this._buildCenterDecor();
     this._buildZones();
     this._buildPortals();
-    this._buildPlaceholderAvatar('female');
+    this._buildHubCompanion();
     this._buildCinemaRoom();
     this._buildHealingParticles();
     // Chat room is now built by VRRoomManager in main.js
@@ -767,47 +781,190 @@ export class CampusScene {
     ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
   }
 
-  // ── Avatar ────────────────────────────────────────────────
-  setAvatarGender(gender) { this._buildPlaceholderAvatar(gender); }
-
-  _buildPlaceholderAvatar(gender) {
-    if (this.avatarGroup) this.scene.remove(this.avatarGroup);
-    const g = new THREE.Group();
-    const skin=new THREE.MeshStandardMaterial({color:0xffcb99,roughness:0.8});
-    const hair=new THREE.MeshStandardMaterial({color:gender==='female'?0x1a0c06:0x0a0604,roughness:0.9});
-    const top =new THREE.MeshStandardMaterial({color:gender==='female'?0xe8a0b0:0x4880c0,roughness:0.85});
-    const btm =new THREE.MeshStandardMaterial({color:gender==='female'?0x6080d0:0x303858,roughness:0.85});
-    const shoe=new THREE.MeshStandardMaterial({color:0x303030,roughness:0.8});
-    const add=(geo,mat,x,y,z,rx=0,rz=0)=>{const m=new THREE.Mesh(geo,mat); m.position.set(x,y,z); m.rotation.set(rx,0,rz); m.castShadow=true; g.add(m); return m;};
-    add(new THREE.SphereGeometry(0.21,18,14),skin,0,1.72,0);
-    add(new THREE.SphereGeometry(0.225,16,10,0,Math.PI*2,0,gender==='female'?Math.PI*0.7:Math.PI*0.45),hair,0,1.72,0);
-    add(new THREE.CylinderGeometry(0.16,0.18,0.72,14),top,0,1.14,0);
-    add(new THREE.CylinderGeometry(0.06,0.055,0.52,8),top,0.27,1.24,0,0,0.3);
-    add(new THREE.CylinderGeometry(0.06,0.055,0.52,8),top,-0.27,1.24,0,0,-0.3);
-    add(new THREE.SphereGeometry(0.07,8,7),skin,0.38,0.96,0);
-    add(new THREE.SphereGeometry(0.07,8,7),skin,-0.38,0.96,0);
-    add(new THREE.CylinderGeometry(0.08,0.07,0.65,10),btm,0.09,0.44,0);
-    add(new THREE.CylinderGeometry(0.08,0.07,0.65,10),btm,-0.09,0.44,0);
-    add(new THREE.BoxGeometry(0.14,0.08,0.25),shoe,0.09,0.08,0.05);
-    add(new THREE.BoxGeometry(0.14,0.08,0.25),shoe,-0.09,0.08,0.05);
-    if (gender==='female') {
-      add(new THREE.CylinderGeometry(0.06,0.04,0.45,8),hair,0.17,1.5,0,0.15,0.1);
-      add(new THREE.CylinderGeometry(0.06,0.04,0.45,8),hair,-0.17,1.5,0,0.15,-0.1);
-    }
-    g.position.set(0,0,4); g.rotation.y = Math.PI;
-    this.scene.add(g);
-    this.avatarGroup = g;
+  // ── Hub companion (圆圆) ──────────────────────────────────
+  // Single AICompanion orb that lives in the central lobby. It is
+  // shared across desktop and VR — `enterHub`/`exitHub` toggle its
+  // chatter loop and `updateHubCompanion` is called every frame
+  // while the player is in the hub (i.e. NOT inside an immersive
+  // zone room). Behaviour mirrors the room companions: smooth
+  // side-by-side follow, scheduled idle chatter, proximity-aware
+  // zone introductions, and bilingual speech bubbles.
+  _buildHubCompanion() {
+    // Warm gold so the orb stands apart from the per-zone companions
+    // (coral chat, blue games, lavender leisure, etc.).
+    this.hubCompanion = new AICompanion(this.scene, {
+      position: new THREE.Vector3(2.2, 1.55, 6.0), // off-centre near entrance
+      color: 0xF0C870,
+      scale: 0.85,
+      followSpeed: 1.6,
+    });
+    this._initHubCompanionLines();
   }
 
-  loadGLBAvatar(url) {
-    if (this.avatarGroup) this.scene.remove(this.avatarGroup);
-    this.gltfLoader.load(url, gltf => {
-      this.avatarGroup = gltf.scene;
-      const box = new THREE.Box3().setFromObject(this.avatarGroup);
-      this.avatarGroup.scale.setScalar(1.8 / (box.max.y - box.min.y));
-      this.avatarGroup.position.set(0, 0, 4);
-      this.scene.add(this.avatarGroup);
-    }, undefined, err => console.warn('[Scene] GLB load failed:', err));
+  _initHubCompanionLines() {
+    // Friendly, slightly playful guide. Bilingual lines so the speech
+    // bubble reads naturally for either audience. Per-zone "approach"
+    // arrays are keyed by zone id and randomised so revisits don't
+    // feel canned.
+    this._hubLines = {
+      greet: [
+        '嘿，欢迎来到 Campus Companion！\nI\'m 圆圆 — your guide. 想去哪个区，我都陪你。',
+        '你好呀！\nI\'m 圆圆. 跟我一起在大厅转转吧，我会介绍每个传送门。',
+      ],
+      idle: [
+        '中间是喷泉，五个传送门围成一圈。\nFive portals, five different vibes — pick whichever calls you.',
+        '想聊心事？想看电影？\n或者下盘棋？跟我说一声就行。',
+        '有点累的话，来谈心区坐一坐~\nThe Chat Corner is always warm.',
+      ],
+      // Per-portal proximity intros. study & healing flagged WIP.
+      zones: {
+        chat: [
+          '谈心区里有一位伴生球，\n会安安静静坐在你旁边听你说话。',
+          'The Chat Corner — sit down, talk it out.\n那里有个温柔的小球陪着你。',
+        ],
+        study: [
+          '学习区还在装修中喔～\nThe Study Room is still being prepared. 之后会上线。',
+          '抱歉，学习区暂时不开放。\nStudy Room — coming soon!',
+        ],
+        leisure: [
+          '休闲区是一个家庭影院。\nThe Leisure Lounge — a real home cinema.',
+          '想看电影吗？休闲区有大屏幕和零食。\n灵灵会陪你一起看。',
+        ],
+        healing: [
+          '疗愈区还没完全建好，\nThe Healing Garden is still in development — soon!',
+          '抱歉，疗愈区暂时不开放，\nstay tuned for the garden.',
+        ],
+        games: [
+          '轻游戏区可以玩五子棋和国际象棋，\n童童会陪你下，并且当裁判。',
+          'Game Zone — Gomoku & full chess.\n童童会一边下棋一边碎碎念。',
+        ],
+      },
+    };
+  }
+
+  // Activate the hub companion: greet, schedule rotating chatter,
+  // and reset proximity cooldowns. Idempotent.
+  enterHub() {
+    if (this._hubActive) return;
+    this._hubActive = true;
+    this._hubLastZoneSpoken = null;
+    if (!this.hubCompanion) return;
+    this.hubCompanion.setMode?.('idle');
+
+    if (this._hubGreetTimer) clearTimeout(this._hubGreetTimer);
+    this._hubGreetTimer = setTimeout(() => {
+      this._hubGreetTimer = null;
+      if (!this._hubActive) return;
+      this._hubSay('greet');
+      this._scheduleHubChatter(11000 + Math.random() * 6000);
+    }, 1400);
+  }
+
+  // Deactivate the hub companion when the player commits to a zone.
+  // Hides the bubble and stops timers but keeps the orb in the scene
+  // so it's ready (and visible from inside the hub) when the player
+  // returns via the home button.
+  exitHub() {
+    this._hubActive = false;
+    if (this._hubGreetTimer)   { clearTimeout(this._hubGreetTimer);   this._hubGreetTimer   = null; }
+    if (this._hubChatterTimer) { clearTimeout(this._hubChatterTimer); this._hubChatterTimer = null; }
+    this.hubCompanion?.hideBubble?.();
+    this.hubCompanion?.setMode?.('idle');
+    this.hubCompanion?.setFollowTarget?.(null);
+  }
+
+  // Per-frame tick: animate the orb, follow the player at a side
+  // offset, and trigger a one-shot zone intro whenever the player
+  // walks within ~5m of any portal that we haven't recently spoken
+  // about. `worldPos` is the camera (head) world position.
+  updateHubCompanion(delta, worldPos) {
+    const c = this.hubCompanion;
+    if (!c) return;
+    // Tick the orb's internal animation (breathing, mouth, follow
+    // smoothing, bubble fade) every frame regardless of activity so
+    // it never freezes mid-pose.
+    c.update(delta, worldPos);
+    if (!this._hubActive || !worldPos) return;
+
+    // ── Side-by-side follow ──────────────────────────────────
+    // Target = player + (1.4m to the right, slight forward, eye-level
+    // dip). Clamp inside the cylindrical hub interior (r=17) and
+    // a comfortable Y range.
+    const ox = this._hubFollowOffset.x;
+    const oy = this._hubFollowOffset.y;
+    const oz = this._hubFollowOffset.z;
+    const tx = worldPos.x + ox;
+    const ty = Math.max(0.9, Math.min(2.1, worldPos.y + oy));
+    const tz = worldPos.z + oz;
+    const r  = Math.hypot(tx, tz);
+    const maxR = 16;
+    let cx = tx, cz = tz;
+    if (r > maxR) { cx = tx * maxR / r; cz = tz * maxR / r; }
+    c.setFollowTarget?.(new THREE.Vector3(cx, ty, cz));
+    // Look toward the player so the eyes track them.
+    c.lookAtStudent?.(new THREE.Vector3(worldPos.x, worldPos.y, worldPos.z));
+
+    // ── Proximity-aware zone intro ───────────────────────────
+    // Walk through every zone portal and find the closest one within
+    // the trigger radius. If it's a different zone than the last we
+    // spoke about, fire its intro line.
+    let closestId = null, closestDist = Infinity;
+    for (const portal of this.portalMeshes) {
+      // Each portal Group's inner plane carries `userData.zone` (the
+      // full ZONES entry). The Group's world position is the gate's
+      // anchor on the lobby ring, so distance is XZ-only.
+      let zoneId = null;
+      portal.traverse(o => {
+        if (!zoneId && o.userData?.zone?.id) zoneId = o.userData.zone.id;
+      });
+      if (!zoneId) continue;
+      const pp = portal.position;
+      const dx = pp.x - worldPos.x;
+      const dz = pp.z - worldPos.z;
+      const d  = Math.hypot(dx, dz);
+      if (d < closestDist) { closestDist = d; closestId = zoneId; }
+    }
+    const TRIGGER = 5.5;          // metres
+    const RESET   = 8.0;          // hysteresis: must walk away first
+    if (closestDist > RESET) this._hubLastZoneSpoken = null;
+    if (closestId && closestDist < TRIGGER &&
+        this._hubLastZoneSpoken !== closestId &&
+        performance.now() - this._hubLastSpokeAt > 2500) {
+      this._hubLastZoneSpoken = closestId;
+      this._hubSay('zone', closestId);
+    }
+  }
+
+  // Speak a randomly-picked line from a category (or per-zone pool).
+  // Categories: 'greet', 'idle', or 'zone' + zoneId.
+  _hubSay(category, zoneId) {
+    if (!this.hubCompanion?.say) return;
+    let pool;
+    if (category === 'zone' && zoneId) {
+      pool = this._hubLines?.zones?.[zoneId];
+    } else {
+      pool = this._hubLines?.[category];
+    }
+    if (!pool || pool.length === 0) return;
+    const text = pool[(Math.random() * pool.length) | 0];
+    this.hubCompanion.say(text);
+    this._hubLastSpokeAt = performance.now();
+  }
+
+  // Recursive idle-chatter scheduler. While the player is in the hub
+  // and not actively triggering a zone intro, the orb drops a random
+  // tip every 12-20s. Suppressed if the orb has spoken in the last
+  // ~6 seconds so we never overlap with a zone proximity bubble.
+  _scheduleHubChatter(initialDelayMs) {
+    if (this._hubChatterTimer) clearTimeout(this._hubChatterTimer);
+    const delay = initialDelayMs ?? (12000 + Math.random() * 8000);
+    this._hubChatterTimer = setTimeout(() => {
+      this._hubChatterTimer = null;
+      if (!this._hubActive) return;
+      const since = performance.now() - this._hubLastSpokeAt;
+      if (since > 6000) this._hubSay('idle');
+      this._scheduleHubChatter();
+    }, Math.max(2000, delay));
   }
 
   // ── Desktop controls ──────────────────────────────────────
@@ -1113,8 +1270,8 @@ export class CampusScene {
       }
     }
 
-    // Avatar idle sway
-    if (this.avatarGroup) this.avatarGroup.rotation.y = Math.PI + Math.sin(t*0.6)*0.08;
+    // (Avatar idle sway removed — humanoid placeholder retired in
+    //  favour of the AI companion orb tracked via updateHubCompanion.)
 
     // Healing particles float
     if (this.healingParticles) {
