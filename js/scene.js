@@ -177,14 +177,15 @@ export class CampusScene {
 
     // Tripo-generated baroque marble fountain — the centerpiece of the hub.
     mountTripoModel(fountain, 'fountain',
-      { position: [0, 0, 0], targetSize: 3.4, yAlign: 'bottom' }
+      { position: [0, 0, 0], targetSize: 5.0, yAlign: 'bottom' }
     );
 
     // Four lush potted plants ringing the fountain (cached → 1 fetch).
+    // Radius pushed out so the plants stay clear of the larger fountain base.
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
       mountTripoModel(this.scene, 'plant_tropical', {
-        position: [Math.cos(a) * 3.15, 0, Math.sin(a) * 3.15],
+        position: [Math.cos(a) * 4.6, 0, Math.sin(a) * 4.6],
         rotationY: Math.random() * Math.PI * 2,
         targetSize: 1.0,
         yAlign: 'bottom',
