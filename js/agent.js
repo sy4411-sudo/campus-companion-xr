@@ -14,31 +14,33 @@ const Agent = (() => {
   const MAX_HISTORY = 20; // keep last N turns to stay within context limit
 
   // ── Demo responses (fallback when no API key) ────────────
+  // Each zone has its OWN companion character so demo replies must
+  // sound distinctly different — same vibe as the systemPrompt voice.
   const DEMO_RESPONSES = {
     chat: [
-      "Hey, I'm here for you. 😊 Want to tell me more about how you're feeling?\n\n嘿，我在这里陪着你。能跟我说说你的感受吗？",
-      "That sounds really tough. I totally get why you'd feel that way. You're not alone in this.\n\n听起来真的很难熬。你有这种感觉完全可以理解，你不是一个人在面对这些。",
-      "It's okay to not have everything figured out. College is a lot! How about we just talk — no pressure.\n\n什么都没想清楚也没关系，大学本来就很复杂。我们就聊聊，不用有压力。",
+      "嗯嗯，我在听。慢慢说，不用急。\n\nI'm here. Take your time, no rush.",
+      "听起来真的挺累的……抱抱。你愿意的话再多跟乐乐说说？\n\nThat sounds really heavy. I'm right here if you want to keep going.",
+      "什么都没想清楚也没关系呀——这种状态我也常常有。\n\nIt's okay to not have it figured out. I get that feeling a lot too.",
     ],
     study: [
-      "Sure! Let's break it down step by step. Which part is confusing you the most?\n\n当然！我们一步一步来分析。哪个部分让你最困惑？",
-      "Great question. Here's how I'd approach it: start with the core concept, then work through examples.\n\n好问题！我会这样入手：先掌握核心概念，再通过例题来巩固。",
-      "Exam prep can feel overwhelming, but a structured study plan makes a huge difference. Want help making one?\n\n备考感觉很压迫，但有条理的计划真的很管用。要不要一起制定一个？",
+      "好嘞，我们拆一下：① 先确认题目要什么，② 找你已经会的部分，③ 再补缺口。你卡在哪一步？\n\nOk let's break it: ① clarify what's asked, ② list what you already know, ③ fill the gap. Where are you stuck?",
+      "这个概念其实就一句话——但魔鬼在三个细节里。我先给你那一句话，再一个个挑细节，行不？\n\nThe concept is one sentence with three sneaky details. Want me to give you the sentence first, then unpack the traps?",
+      "我的备考小习惯：先做一份"我已经会的清单"，能直接砍掉三分之一压力。要不要来一份？\n\nMy study trick: write a 'stuff I already know' list first — it cuts a third of the panic. Want to try?",
     ],
     leisure: [
-      "Oh, that book/film sounds so good! I've been meaning to check it out. What did you think?\n\n哦，那本书/那部电影听起来好棒！我一直想看。你觉得怎么样？",
-      "Honestly, my current obsession is finding cozy café playlists and reading. Very campus-core. 😄\n\n说真的，我最近的最爱是找咖啡馆风格的歌单然后看书，超级校园风。😄",
-      "We should totally make a watch list together! What genre are you into lately?\n\n我们应该一起搞一个观影清单！你最近喜欢什么类型？",
+      "哇这个我也好喜欢！你那本读到哪儿了？我最近在啃一本超级上头的散文集～\n\nOh I love that one! How far in are you? I'm currently obsessed with an essay collection.",
+      "悠悠的小私心推荐：午后咖啡 + 一首老港乐 + 一本翻了一半的书，治愈到爆。\n\nMy guilty rec combo: afternoon coffee + a Cantopop classic + a half-read book. Pure bliss.",
+      "等等——你刚刚说的那个梗我也在追！你站CP还是站事业线？\n\nWait that show?! I'm watching too. Are you here for the romance or the plot twists?",
     ],
     healing: [
-      "Let's take a slow breath together. In for 4 counts… hold for 4… out for 6. 🌿 How do you feel?\n\n我们一起慢慢呼吸吧。吸气4拍……屏住4拍……呼气6拍。🌿 感觉怎么样？",
-      "Calligraphy is such a beautiful way to quiet the mind. Even just tracing strokes can be meditative.\n\n书法真的是平静内心的好方式。哪怕只是慢慢描字，也很有冥想的感觉。",
-      "Rest is productive. You don't have to earn relaxation. 🍃\n\n休息本身就是一种生产力。放松不需要被任何东西换取。🍃",
+      "我们……一起慢慢吸一口气。\n4 拍吸气……4 拍屏住……6 拍呼出。\n\n这样……再来一次。\n\n…Slow breath in for 4… hold 4… out for 6. Once more, gently.",
+      "你不需要 productive，今天能好好喝一杯水也很好。\n\nYou don't need to be productive today. Even just drinking a glass of water is enough.",
+      "如果实在累……\n就让自己安静地坐着。\n书法、茶、窗外的风——都是借口，让你停一下而已。\n\nIf you're tired… just sit. Calligraphy, tea, the breeze — they're all excuses to pause.",
     ],
     games: [
-      "Let's play! 🎮 I warn you though — I've got beginner's luck on my side today. 😄\n\n开始吧！🎮 不过我要提醒你——今天我手气不错哦。😄",
-      "Good move! But I think I see a better strategy brewing… your turn!\n\n好棋！不过我感觉有个更好的策略即将浮现……轮到你了！",
-      "Games are a great way to recharge. Even 10 minutes can reset your brain. Ready for another round?\n\n游戏真的很适合充电。哪怕10分钟也能让大脑重启。再来一局？",
+      "嘿嘿你来啦！按墙上"开始游戏"，咱俩就开战~你执黑先手哦。\n\nHi! Hit START on the wall and we'll battle. You're black, you go first.",
+      "这步好棋！等等让我想一下下……👀\n\nSlick move! Hold on, let me think… 👀",
+      "嘿嘿不能让你赢的，看童童这一手！\n\nNot letting you win that easy — watch me!",
     ],
   };
 

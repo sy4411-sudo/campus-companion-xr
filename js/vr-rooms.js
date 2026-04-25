@@ -1288,7 +1288,68 @@ class GamesVRRoom extends VRRoom {
     this._buildGomokuAssets();
     this._enableBoardClick();
 
+    // ── Companion personality (童童 / Tongtong) ─────────────────
+    // Speech-bubble lines only — every utterance goes through
+    // `this.companion.say()` so it appears in the same 3D bubble the
+    // chat zone uses, never in the desktop chat panel. Lines are short
+    // and bratty/playful to match the Game-Zone systemPrompt.
+    this._gomokuLines = {
+      greet: [
+        '嘿嘿~我是童童！想下五子棋吗？\n按墙上"开始游戏"，你执黑先手哦。',
+        '欢迎来轻游戏区！\n童童陪你下五子棋——按"开始游戏"开局~',
+      ],
+      start: [
+        '开局啦！你执黑先手——\n点棋盘上落子吧~',
+        '准备好啦~黑棋你先来！',
+        '童童准备就绪！来吧，看谁更厉害~',
+      ],
+      playerMove: [
+        '嗯…让我想想~',
+        '哎呀好棋！',
+        '嘿嘿，看我接招！',
+        '这步有意思~',
+        '让童童算一算……',
+      ],
+      playerThreat: [          // player just made an open-3 / four-threat
+        '欸！这步我得堵——',
+        '不行不行，得防一下！',
+        '危险危险~童童得小心了！',
+      ],
+      aiMove: [
+        '看童童这一手！',
+        '嘿嘿，这里！',
+        '猜猜我下一步~',
+        '哼哼，没那么容易赢哦~',
+      ],
+      aiThreat: [              // AI just built an open-3 of its own
+        '嘿嘿，童童快连成线啦！',
+        '快了快了——你能挡住吗？',
+      ],
+      playerWin: [
+        '哇！你赢啦！\n再来一局？按"开始游戏"继续~',
+        '太厉害啦！童童认输~\n要不要再来一局？',
+      ],
+      aiWin: [
+        '这局童童赢啦~ 嘿嘿！\n下次你可以的，按"开始游戏"再来~',
+        '哈哈！童童赢咯~\n再战一局吗？',
+      ],
+      end: [
+        '好的，下次再来一局！',
+        '辛苦啦~随时回来玩~',
+      ],
+    };
+
     this.onReady();
+  }
+
+  // ── Override enter so 童童 greets the player on each visit. ──
+  enter() {
+    super.enter();
+    // Slight delay so the bubble appears after the camera has settled.
+    setTimeout(() => {
+      // Don't talk over an active match — only greet when idle.
+      if (!this._gomoku?.active) this._say('greet');
+    }, 700);
   }
 
   // ────────────────────────────────────────────────────────────
@@ -1303,6 +1364,18 @@ class GamesVRRoom extends VRRoom {
   // ────────────────────────────────────────────────────────────
   //  Game lifecycle
   // ────────────────────────────────────────────────────────────
+  // ── Speech bubble helper ────────────────────────────────────
+  // Pick a random line from `category` and route it through the
+  // companion's 3D speech bubble (same widget the chat zone uses).
+  // ALL in-game chatter goes through this so nothing leaks into the
+  // desktop chat panel.
+  _say(category) {
+    const pool = this._gomokuLines?.[category];
+    if (!pool || !this.companion?.say) return;
+    const text = pool[(Math.random() * pool.length) | 0];
+    this.companion.say(text);
+  }
+
   _startGame() {
     const g = this._gomoku;
     // Always restart cleanly — pressing START mid-game resets the position.
@@ -1318,10 +1391,8 @@ class GamesVRRoom extends VRRoom {
     g.turn = 'player';                // player always moves first (黑棋)
     g.thinking = false;
 
-    if (this.companion) {
-      this.companion.setExpression('happy');
-      this.companion.say?.('开始啦！你执黑先手——\n点棋盘上落子吧。');
-    }
+    if (this.companion) this.companion.setExpression('happy');
+    this._say('start');
   }
 
   _endGame() {
@@ -1332,10 +1403,8 @@ class GamesVRRoom extends VRRoom {
     g.thinking = false;
     this._clearStones();
     this._hideVictoryBanner();
-    if (this.companion) {
-      this.companion.setExpression('idle');
-      this.companion.say?.('好的，下次再来一局！');
-    }
+    if (this.companion) this.companion.setExpression('idle');
+    this._say('end');
   }
 
   // ────────────────────────────────────────────────────────────
@@ -1345,23 +1414,31 @@ class GamesVRRoom extends VRRoom {
     const g = this._gomoku;
 
     // Biconvex stone profile via LatheGeometry — proportional to a real
-    // go stone (R=0.5×cell, T≈0.4×R). We sample a circular arc whose
-    // chord is the stone's edge so the top and bottom domes are convex
-    // but shallow, exactly like a real "Yunzi" stone.
+    // Yunzi stone (R ≈ 0.42×cell, T ≈ 0.36×R). The silhouette is one
+    // sphere arc on top, mirrored on the bottom, meeting at the equator.
+    //
+    // Place the sphere centre on the y-axis at y = halfT − arcR (below
+    // the equator) and sweep the angle a from the +y axis:
+    //   x(a) = arcR · sin(a),   y(a) = (halfT − arcR) + arcR · cos(a)
+    //
+    // a = 0       → top pole at (0, halfT)
+    // a = asin(R/arcR) → equator at (R, 0)
     const R = g.stoneR;
     const halfT = g.stoneT / 2;
-    const arcR = (R * R + halfT * halfT) / g.stoneT;     // sphere radius
+    // Sphere radius such that the arc passes through (0, halfT) and (R, 0).
+    const arcR = (R * R + halfT * halfT) / g.stoneT;
     const SEG = 24;
-    const startA = Math.PI / 2;                           // top pole
-    const endA = Math.acos(R / arcR);                     // edge
+    const startA = 0;
+    const endA = Math.asin(R / arcR);
     const profile = [];
     for (let i = 0; i <= SEG; i++) {
-      const a = startA - (i / SEG) * (startA - endA);
+      const a = startA + (i / SEG) * (endA - startA);
       const x = arcR * Math.sin(a);
       const y = (halfT - arcR) + arcR * Math.cos(a);
       profile.push(new THREE.Vector2(x, y));
     }
-    // Mirror to bottom dome
+    // Mirror the top profile to build the bottom dome (skip the equator
+    // point at index SEG, which is shared between halves).
     for (let i = SEG - 1; i >= 0; i--) {
       const top = profile[i];
       profile.push(new THREE.Vector2(top.x, -top.y));
@@ -1437,11 +1514,53 @@ class GamesVRRoom extends VRRoom {
       this._onWin('player');
       return;
     }
+    // 童童 reacts: if the player just made an aggressive move
+    // (open-3 or stronger) she warns she'll have to defend; otherwise
+    // a regular acknowledgement. We bubble these intermittently so it
+    // doesn't feel spammy.
+    if (this._isThreatMove(row, col, 1)) {
+      this._say('playerThreat');
+    } else if (Math.random() < 0.55) {
+      this._say('playerMove');
+    }
     g.turn = 'ai';
     g.thinking = true;
     if (this.companion) this.companion.setExpression('thinking');
     // Small think-delay so the AI feels deliberate rather than instant.
     setTimeout(() => this._aiMove(), 480);
+  }
+
+  // A move counts as a "threat" if it creates an open-3 or any 4-in-a-row
+  // along any axis, mirroring how a real opponent would react.
+  _isThreatMove(row, col, who) {
+    const g = this._gomoku;
+    const N = g.GRID;
+    const board = g.board;
+    const dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];
+    for (const [dr, dc] of dirs) {
+      let lc = 0, lb = false, rc = 0, rb = false;
+      for (let k = 1; k <= 4; k++) {
+        const rr = row - dr * k, cc = col - dc * k;
+        if (rr < 0 || rr >= N || cc < 0 || cc >= N) { lb = true; break; }
+        const v = board[rr][cc];
+        if (v === who) lc++;
+        else if (v !== 0) { lb = true; break; }
+        else break;
+      }
+      for (let k = 1; k <= 4; k++) {
+        const rr = row + dr * k, cc = col + dc * k;
+        if (rr < 0 || rr >= N || cc < 0 || cc >= N) { rb = true; break; }
+        const v = board[rr][cc];
+        if (v === who) rc++;
+        else if (v !== 0) { rb = true; break; }
+        else break;
+      }
+      const cnt = lc + rc + 1;
+      const open = (lb ? 0 : 1) + (rb ? 0 : 1);
+      if (cnt >= 4) return true;
+      if (cnt === 3 && open === 2) return true;
+    }
+    return false;
   }
 
   // ────────────────────────────────────────────────────────────
@@ -1456,10 +1575,11 @@ class GamesVRRoom extends VRRoom {
     const half = g.inner / 2;
     const x = -half + col * g.step;
     const z = -half + row * g.step;
-    // Stone sits on top of the slab. Slab top y = 0.04 + 0.06/2 = 0.07,
-    // and the lathe geometry is centred (so its Y origin is the stone's
-    // mid-thickness). Lift by halfT.
-    const y = 0.07 + g.stoneT / 2;
+    // Slab body top sits at y = 0.07 and the texture mesh at y ≈ 0.071.
+    // The stone's lathe geometry is centred on its equator, so the bottom
+    // pole is at local y = -halfT. Lift the centre to halfT + a 2 mm
+    // clearance so the dome can never poke into the texture plane.
+    const y = 0.073 + g.stoneT / 2;
 
     const stone = new THREE.Mesh(
       g.stoneGeo,
@@ -1609,6 +1729,13 @@ class GamesVRRoom extends VRRoom {
       this._onWin('ai');
       return;
     }
+    // 童童 trash-talks softly. If she just built her own open-3/4, she
+    // warns the player; otherwise an occasional generic quip.
+    if (this._isThreatMove(row, col, 2)) {
+      this._say('aiThreat');
+    } else if (Math.random() < 0.45) {
+      this._say('aiMove');
+    }
     g.turn = 'player';
     if (this.companion) this.companion.setExpression('idle');
   }
@@ -1625,10 +1752,10 @@ class GamesVRRoom extends VRRoom {
     if (this.companion) {
       if (winner === 'player') {
         this.companion.setExpression('happy');
-        this.companion.say?.('哇！你赢啦！\n再来一局？按"开始游戏"继续~');
+        this._say('playerWin');
       } else {
         this.companion.setExpression('empathy');
-        this.companion.say?.('这局我赢啦！\n下次你可以的，按"开始游戏"再来~');
+        this._say('aiWin');
       }
     }
   }
