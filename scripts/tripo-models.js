@@ -207,10 +207,8 @@ export const MODELS = {
   },
   theater_curtain_red: {
     prompt:
-      'a heavy red velvet stage curtain drawn open and tied back with a thick golden ' +
-      'rope tassel, deep luxurious pleats and folds, ceiling-to-floor length, ' +
-      'classic movie theatre proscenium drape, photorealistic 3D render, ' +
-      'single isolated object on transparent background',
+      'red velvet theater curtain drape with golden tassel tieback, ' +
+      'tall vertical pleats, photorealistic 3D model',
   },
   recliner_loveseat: {
     prompt:

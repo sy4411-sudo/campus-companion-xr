@@ -1006,51 +1006,422 @@ class LeisureVRRoom extends VRRoom {
   }
 
   build() {
-    this._buildRoom(18, 16, 6, 0x1a1a1a, 0x12121a);
+    // Bespoke cinema shell — burgundy walls + walnut floor + coffered
+    // ceiling + emissive cove + center aisle strip. Replaces the cold
+    // BaseVRRoom default so the room feels like a private screening room
+    // before any prop is even loaded.
+    this._buildTheaterShell(18, 16, 6);
     this._buildAICompanion(-3, 0.5, 1, 0xC0A0D8);
     this._buildExitDoor(0, 0, 7);
 
-    // ── Theater ambient lighting ──────────────────────────────
-    // Slightly brighter than before so the seats and side-table
-    // models register without a video being projected on the screen.
-    this.group.add(new THREE.AmbientLight(0x7a7aa8, 0.22));
+    // ── Cinema lighting rig (warm, layered) ───────────────────
+    // 1) HemisphereLight: warm sky / dim mahogany floor — keeps
+    //    shadows lifted without flattening them.
+    // 2) Faint AmbientLight so very dark seat undersides don't
+    //    crush to pure black on lower-end devices.
+    // 3) Four warm wall-sconce PointLights paired with the sconce
+    //    GLBs along the side walls — these are what give the room
+    //    its cozy "movie palace" glow.
+    this.group.add(new THREE.HemisphereLight(0xffd2a0, 0x3a1f12, 0.34));
+    this.group.add(new THREE.AmbientLight(0xffe6c8, 0.18));
 
-    const leftLight = new THREE.PointLight(0x6040a0, 0.55, 11);
-    leftLight.position.set(-8, 3, 0);
-    this.group.add(leftLight);
+    const sconceLights = [
+      [-8.55, 2.55, -3.5], [-8.55, 2.55, 3.5],
+      [ 8.55, 2.55, -3.5], [ 8.55, 2.55, 3.5],
+    ];
+    for (const [x, y, z] of sconceLights) {
+      const l = new THREE.PointLight(0xffb066, 0.55, 7.5, 1.6);
+      l.position.set(x, y, z);
+      this.group.add(l);
+    }
 
-    const rightLight = new THREE.PointLight(0x4060a0, 0.55, 11);
-    rightLight.position.set(8, 3, 0);
-    this.group.add(rightLight);
-
-    // ── Home theater rig ──────────────────────────────────────
-    // Wide acoustic-bezel frame with a "bias light" plane glowing
-    // behind it on the wall (mimics a real home-cinema setup), the
-    // big interactive screen mesh itself, plus a subwoofer + two
-    // tower speakers flanking the wall.
+    // ── Home theater rig (screen, bezel, speakers, controls) ──
     this._buildHomeTheater();
 
-    // Cinema seats (cached → 1 fetch for all 10 seats).
-    for (let row = 0; row < 2; row++) {
-      for (let col = -2; col <= 2; col++) {
-        mountTripoModel(this.group, 'cinema_seat_red', {
-          position: [col * 1.5, 0, 3 + row * 2],
-          rotationY: Math.PI,
-          targetSize: 0.95,
-          yAlign: 'bottom',
-        });
+    // ── Seating (cozy 2-row layout, not a packed grid) ────────
+    // Front row of 5 single seats — closer to the screen for the
+    // "money seats". Slightly raised to show the recliners behind.
+    const frontZ = 1.5;
+    for (let col = -2; col <= 2; col++) {
+      mountTripoModel(this.group, 'cinema_seat_red', {
+        position: [col * 1.5, 0, frontZ],
+        rotationY: Math.PI,
+        targetSize: 0.95,
+        yAlign: 'bottom',
+      });
+    }
+    // Back row — pair of premium leather recliner loveseats.
+    const backZ = frontZ + 2.6;
+    mountTripoModel(this.group, 'recliner_loveseat', {
+      position: [-1.6, 0, backZ], rotationY: Math.PI,
+      targetSize: 1.7, yAlign: 'bottom',
+    });
+    mountTripoModel(this.group, 'recliner_loveseat', {
+      position: [ 1.6, 0, backZ], rotationY: Math.PI,
+      targetSize: 1.7, yAlign: 'bottom',
+    });
+
+    // ── Snack station (stage-right of the seating) ────────────
+    mountTripoModel(this.group, 'side_table_bistro',
+      { position: [7.2, 0, 1.0], targetSize: 0.9, yAlign: 'bottom' });
+    mountTripoModel(this.group, 'popcorn_bucket',
+      { position: [7.2, 0.85, 1.0], targetSize: 0.45, yAlign: 'bottom' });
+    mountTripoModel(this.group, 'popcorn_machine',
+      { position: [7.6, 0, 4.6], rotationY: -Math.PI / 2,
+        targetSize: 1.5, yAlign: 'bottom' });
+
+    // ── Wall art on side walls (between the sconce pairs) ────
+    mountTripoModel(this.group, 'movie_poster_classic', {
+      position: [-8.85, 1.95, 0], rotationY:  Math.PI / 2,
+      targetSize: 1.7, yAlign: 'center',
+    });
+    mountTripoModel(this.group, 'movie_poster_modern', {
+      position: [ 8.85, 1.95, 0], rotationY: -Math.PI / 2,
+      targetSize: 1.7, yAlign: 'center',
+    });
+
+    // ── Wall sconces (4): paired around each side-wall poster ─
+    const sconceSpec = [
+      { p: [-8.85, 2.6, -3.5], r:  Math.PI / 2 },
+      { p: [-8.85, 2.6,  3.5], r:  Math.PI / 2 },
+      { p: [ 8.85, 2.6, -3.5], r: -Math.PI / 2 },
+      { p: [ 8.85, 2.6,  3.5], r: -Math.PI / 2 },
+    ];
+    for (const s of sconceSpec) {
+      mountTripoModel(this.group, 'wall_sconce_theater', {
+        position: s.p, rotationY: s.r,
+        targetSize: 0.55, yAlign: 'center',
+      });
+    }
+
+    // ── Proscenium curtains — flanking the screen ────────────
+    // Heavy red velvet drapes pulled back with gold tassels frame the
+    // big screen and hide the seam between bezel and back wall.
+    const wallZ = -7.85;
+    mountTripoModel(this.group, 'theater_curtain_red', {
+      position: [-6.4, 0, wallZ + 0.4], rotationY: 0,
+      targetSize: 5.5, yAlign: 'bottom',
+    });
+    mountTripoModel(this.group, 'theater_curtain_red', {
+      position: [ 6.4, 0, wallZ + 0.4], rotationY: 0,
+      targetSize: 5.5, yAlign: 'bottom',
+    });
+
+    this.onReady();
+  }
+
+  // ── Cinema shell ────────────────────────────────────────────
+  // Walls: burgundy upper + walnut wainscot + gold chair-rail.
+  // Floor: dark walnut with a center carpet runner + emissive aisle.
+  // Ceiling: dark plum with a coffered grid + warm cove glow at edges.
+  _buildTheaterShell(width, depth, height) {
+    this.roomSize = { width, depth, height };
+
+    // ── Floor — dark walnut planks (CanvasTexture) ──────────
+    const floorTex = this._makeTheaterFloorTexture();
+    floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+    floorTex.repeat.set(3, 3);
+    floorTex.colorSpace = THREE.SRGBColorSpace;
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, depth),
+      new THREE.MeshStandardMaterial({
+        map: floorTex, roughness: 0.85, metalness: 0.04,
+      }),
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    this.group.add(floor);
+
+    // Plush red carpet runner down the center aisle.
+    const carpetMat = new THREE.MeshStandardMaterial({
+      color: 0x4d141b, roughness: 0.95, metalness: 0,
+    });
+    const carpet = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.4, depth - 1.0), carpetMat,
+    );
+    carpet.rotation.x = -Math.PI / 2;
+    carpet.position.y = 0.005;
+    this.group.add(carpet);
+
+    // Two warm aisle-light strips on either side of the carpet.
+    const aisleMat = new THREE.MeshBasicMaterial({
+      color: 0xffb066, transparent: true, opacity: 0.85,
+    });
+    for (const sx of [-1.55, 1.55]) {
+      const strip = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.06, depth - 1.4), aisleMat,
+      );
+      strip.rotation.x = -Math.PI / 2;
+      strip.position.set(sx, 0.012, 0);
+      this.group.add(strip);
+    }
+
+    // ── Walls — wainscot + burgundy upper (CanvasTexture) ───
+    const wallTex = this._makeTheaterWallTexture();
+    const _wrap = (hRepeat) => {
+      const t = wallTex.clone();
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.repeat.set(hRepeat, 1);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.needsUpdate = true;
+      return t;
+    };
+    const mkWall = (planeWidth) => new THREE.Mesh(
+      new THREE.PlaneGeometry(planeWidth, height),
+      new THREE.MeshStandardMaterial({
+        map: _wrap(planeWidth / 4),
+        roughness: 0.9, metalness: 0.06,
+        side: THREE.DoubleSide,
+      }),
+    );
+
+    const back = mkWall(width);
+    back.position.set(0, height / 2, -depth / 2);
+    this.group.add(back);
+
+    const front = mkWall(width);
+    front.rotation.y = Math.PI;
+    front.position.set(0, height / 2, depth / 2);
+    this.group.add(front);
+
+    const left = mkWall(depth);
+    left.rotation.y = Math.PI / 2;
+    left.position.set(-width / 2, height / 2, 0);
+    this.group.add(left);
+
+    const right = mkWall(depth);
+    right.rotation.y = -Math.PI / 2;
+    right.position.set(width / 2, height / 2, 0);
+    this.group.add(right);
+
+    // ── Ceiling — coffered tile pattern (CanvasTexture) ─────
+    const ceilTex = this._makeTheaterCeilingTexture();
+    ceilTex.wrapS = ceilTex.wrapT = THREE.RepeatWrapping;
+    ceilTex.repeat.set(3, 3);
+    ceilTex.colorSpace = THREE.SRGBColorSpace;
+    const ceiling = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, depth),
+      new THREE.MeshStandardMaterial({
+        map: ceilTex, roughness: 0.92, metalness: 0.06,
+      }),
+    );
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.y = height;
+    this.group.add(ceiling);
+
+    // Cove glow strip — emissive frame inset just below the ceiling
+    // to fake the warm hidden-LED uplight you find in real cinemas.
+    const coveMat = new THREE.MeshBasicMaterial({
+      color: 0xffb066, transparent: true, opacity: 0.55,
+    });
+    const coveSpec = [
+      [width - 0.6, 0.06, 0,                height - 0.10,  0,            -depth / 2 + 0.06],
+      [width - 0.6, 0.06, 0,                height - 0.10,  0,             depth / 2 - 0.06],
+      [0.06, 0.06,        depth - 0.6,      height - 0.10, -width / 2 + 0.06, 0],
+      [0.06, 0.06,        depth - 0.6,      height - 0.10,  width / 2 - 0.06, 0],
+    ];
+    for (const [w, h, d, py, px, pz] of coveSpec) {
+      const cove = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), coveMat);
+      cove.position.set(px, py, pz);
+      this.group.add(cove);
+    }
+  }
+
+  // ── Wall CanvasTexture: burgundy upper / walnut wainscot ──
+  _makeTheaterWallTexture() {
+    const W = 1024, H = 1280;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Top crown moulding strip (warm walnut hint).
+    ctx.fillStyle = '#3a2418';
+    ctx.fillRect(0, 0, W, H * 0.025);
+
+    // Upper burgundy field with subtle vertical drape gradient.
+    const upper = ctx.createLinearGradient(0, H * 0.025, 0, H * 0.62);
+    upper.addColorStop(0, '#5a1f25');
+    upper.addColorStop(1, '#3a1218');
+    ctx.fillStyle = upper;
+    ctx.fillRect(0, H * 0.025, W, H * 0.595);
+
+    // Faint vertical fabric texture so the burgundy isn't dead.
+    ctx.strokeStyle = 'rgba(255, 200, 150, 0.05)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < W; x += 4) {
+      ctx.beginPath();
+      ctx.moveTo(x, H * 0.025);
+      ctx.lineTo(x, H * 0.62);
+      ctx.stroke();
+    }
+
+    // Damask diamond accents — luxe but quiet.
+    ctx.strokeStyle = 'rgba(255, 200, 140, 0.08)';
+    ctx.lineWidth = 1.5;
+    const dW = 168, dH = 84;
+    for (let y = H * 0.05; y < H * 0.58; y += dH) {
+      for (let x = -dW / 2; x < W + dW; x += dW) {
+        const off = ((y / dH) | 0) % 2 === 0 ? 0 : dW / 2;
+        ctx.beginPath();
+        ctx.moveTo(x + off,            y + dH / 2);
+        ctx.lineTo(x + off + dW / 2,   y);
+        ctx.lineTo(x + off + dW,       y + dH / 2);
+        ctx.lineTo(x + off + dW / 2,   y + dH);
+        ctx.closePath();
+        ctx.stroke();
       }
     }
 
-    // Side table for the popcorn bucket.
-    mountTripoModel(this.group, 'side_table_bistro',
-      { position: [7, 0, 2], targetSize: 0.9, yAlign: 'bottom' });
+    // ── Chair rail: gold beadwork + dark shadow band ────────
+    ctx.fillStyle = '#1c0a08';
+    ctx.fillRect(0, H * 0.62, W, H * 0.012);
+    ctx.fillStyle = '#c0974a';
+    ctx.fillRect(0, H * 0.632, W, H * 0.014);
+    ctx.fillStyle = '#3a2010';
+    ctx.fillRect(0, H * 0.646, W, H * 0.014);
 
-    // Popcorn bucket on top of the side table (~0.85m high).
-    mountTripoModel(this.group, 'popcorn_bucket',
-      { position: [7, 0.85, 2], targetSize: 0.45, yAlign: 'bottom' });
+    // ── Wainscot — walnut panels with vertical seams ─────────
+    const wainscot = ctx.createLinearGradient(0, H * 0.66, 0, H * 0.97);
+    wainscot.addColorStop(0, '#3a2719');
+    wainscot.addColorStop(1, '#1f1108');
+    ctx.fillStyle = wainscot;
+    ctx.fillRect(0, H * 0.66, W, H * 0.31);
 
-    this.onReady();
+    // Inset rectangular panel mouldings — 4 panels per tile.
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.lineWidth = 2;
+    const panelMargin = 24;
+    for (let i = 0; i < 4; i++) {
+      const px = i * (W / 4) + panelMargin;
+      const pw = W / 4 - panelMargin * 2;
+      ctx.strokeRect(px, H * 0.685, pw, H * 0.27);
+    }
+    // Highlight stroke inside each panel for relief.
+    ctx.strokeStyle = 'rgba(255, 200, 150, 0.07)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 4; i++) {
+      const px = i * (W / 4) + panelMargin + 4;
+      const pw = W / 4 - panelMargin * 2 - 8;
+      ctx.strokeRect(px, H * 0.685 + 4, pw, H * 0.27 - 8);
+    }
+
+    // Walnut grain whispers.
+    ctx.strokeStyle = 'rgba(255, 200, 130, 0.045)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 80; i++) {
+      const y = H * 0.66 + Math.random() * H * 0.31;
+      const x = Math.random() * W;
+      const len = 60 + Math.random() * 200;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + len, y + (Math.random() - 0.5) * 4);
+      ctx.stroke();
+    }
+
+    // Skirting board.
+    ctx.fillStyle = '#0a0604';
+    ctx.fillRect(0, H * 0.97, W, H * 0.03);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Floor CanvasTexture: dark walnut planks ─────────────
+  _makeTheaterFloorTexture() {
+    const W = 512, H = 512;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    const grad = ctx.createLinearGradient(0, 0, W, H);
+    grad.addColorStop(0, '#2c1d12');
+    grad.addColorStop(1, '#180c06');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.lineWidth = 1.5;
+    for (let x = 0; x < W; x += 64) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let y = 0; y < H; y += 256) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    ctx.strokeStyle = 'rgba(180, 130, 80, 0.07)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 100; i++) {
+      const x = Math.random() * W, y = Math.random() * H;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + 30 + Math.random() * 50, y);
+      ctx.stroke();
+    }
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Ceiling CanvasTexture: coffered tiles ───────────────
+  _makeTheaterCeilingTexture() {
+    const W = 512, H = 512;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Deep plum base.
+    ctx.fillStyle = '#1a0e1c';
+    ctx.fillRect(0, 0, W, H);
+
+    // Coffered grid — each tile has a slightly lighter inset and a
+    // central rosette dot, then dark seam lines around it.
+    const rows = 4, cols = 4;
+    const cw = W / cols, ch = H / rows;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = c * cw, y = r * ch;
+        // Inset panel
+        const inset = ctx.createRadialGradient(
+          x + cw / 2, y + ch / 2, 4,
+          x + cw / 2, y + ch / 2, cw * 0.55,
+        );
+        inset.addColorStop(0, '#37223e');
+        inset.addColorStop(1, '#1a0e1c');
+        ctx.fillStyle = inset;
+        ctx.fillRect(x + 6, y + 6, cw - 12, ch - 12);
+
+        // Central rosette
+        ctx.fillStyle = 'rgba(255, 195, 130, 0.18)';
+        ctx.beginPath();
+        ctx.arc(x + cw / 2, y + ch / 2, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Dark seams.
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.lineWidth = 4;
+    for (let i = 0; i <= cols; i++) {
+      ctx.beginPath();
+      ctx.moveTo(i * cw, 0);
+      ctx.lineTo(i * cw, H);
+      ctx.stroke();
+    }
+    for (let i = 0; i <= rows; i++) {
+      ctx.beginPath();
+      ctx.moveTo(0, i * ch);
+      ctx.lineTo(W, i * ch);
+      ctx.stroke();
+    }
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
   }
 
   // ── Build the wall-mounted screen, frame, bias-light and speakers.
@@ -1062,9 +1433,11 @@ class LeisureVRRoom extends VRRoom {
     const screenY = 3.1;
 
     // Bias light — a soft glow PLANE behind the bezel painted on
-    // the back wall. Reads as the warm wall halo around modern TVs.
+    // the back wall. Switched from cold blue to warm amber so it
+    // harmonises with the new burgundy walls and sconces rather
+    // than fighting them.
     const biasMat = new THREE.MeshBasicMaterial({
-      color: 0x6c7bff, transparent: true, opacity: 0.35,
+      color: 0xffa566, transparent: true, opacity: 0.35,
     });
     const bias = new THREE.Mesh(
       new THREE.PlaneGeometry(frameW + 1.6, frameH + 1.6),
@@ -1139,9 +1512,10 @@ class LeisureVRRoom extends VRRoom {
     };
     window.addEventListener('ht:load', this._onHTLoad);
 
-    // Glow accent in front of the screen — soft bluish wash on the
-    // first row of seats so the room reads as "powered on".
-    const screenLight = new THREE.PointLight(0x8a96ff, 0.7, 12, 1.6);
+    // Glow accent in front of the screen — kept faintly cool so it
+    // still reads as "powered on" video light, but lowered to 0.35
+    // so it never overrides the warm sconce ambience.
+    const screenLight = new THREE.PointLight(0x9aa6ff, 0.35, 12, 1.6);
     screenLight.position.set(0, screenY, wallZ + 3.5);
     this.group.add(screenLight);
 
@@ -1718,7 +2092,7 @@ class GamesVRRoom extends VRRoom {
     this.onReady();
   }
 
-  // ── Override enter so 童童 greets the player on each visit. ──
+  // ── Override enter so 童童 greets the player on each visit. ��─
   enter() {
     super.enter();
     // Slight delay so the bubble appears after the camera has settled.
@@ -3845,7 +4219,7 @@ class GamesVRRoom extends VRRoom {
   //  look: deep-plum upper walls with neon argyle, walnut wainscot
   //  with an amber chair-rail, walnut floor, and a cinematic
   //  spotlight rig that pools warm light over the floor board.
-  // ════════════════════════════════════════════════════════════
+  // ══════════════════��═════════════════════════════════════════
   _buildGamesRoom(width, depth, height) {
     this.roomSize = { width, depth, height };
 
