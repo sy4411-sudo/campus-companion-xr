@@ -1038,73 +1038,94 @@ class LeisureVRRoom extends VRRoom {
     // ── Home theater rig (screen, bezel, speakers, controls) ──
     this._buildHomeTheater();
 
-    // ── Seating (cozy 2-row layout, not a packed grid) ────────
-    // Front row of 5 single seats — closer to the screen for the
-    // "money seats". Slightly raised to show the recliners behind.
-    const frontZ = 1.5;
-    for (let col = -2; col <= 2; col++) {
+    // ── Seating (front-row chairs + back-row recliners) ──────
+    // Tripo loader pre-rotates every GLB by +π/2 around Y so that
+    // wrapper rotationY = 0 → model's rendered front faces -Z. The
+    // rendered "front" of these chair / recliner GLBs is the BACK
+    // (the side a passer-by sees in a furniture-store render), so
+    // rotationY = π flips the cushion to face -Z, i.e. toward the
+    // screen. Sitters then face the screen too. ✓
+    const frontZ = 2.0;
+    const seatXs = [-3.2, -1.6, 0, 1.6, 3.2];
+    for (const sx of seatXs) {
       mountTripoModel(this.group, 'cinema_seat_red', {
-        position: [col * 1.5, 0, frontZ],
+        position: [sx, 0, frontZ],
         rotationY: Math.PI,
         targetSize: 0.95,
         yAlign: 'bottom',
       });
     }
-    // Back row — pair of premium leather recliner loveseats.
-    const backZ = frontZ + 2.6;
+    const backZ = 4.6;
     mountTripoModel(this.group, 'recliner_loveseat', {
-      position: [-1.6, 0, backZ], rotationY: Math.PI,
+      position: [-2.0, 0, backZ], rotationY: Math.PI,
       targetSize: 1.7, yAlign: 'bottom',
     });
     mountTripoModel(this.group, 'recliner_loveseat', {
-      position: [ 1.6, 0, backZ], rotationY: Math.PI,
+      position: [ 2.0, 0, backZ], rotationY: Math.PI,
       targetSize: 1.7, yAlign: 'bottom',
     });
 
-    // ── Snack station (stage-right of the seating) ────────────
+    // ── Snack zone (front-right, stays clear of the seats) ────
+    // Front-right seat is at x=3.2, so the side table at x=6.0
+    // leaves a comfortable 1.8m walking aisle around it. The
+    // popcorn bucket sits on top of the table (~0.6m up).
     mountTripoModel(this.group, 'side_table_bistro',
-      { position: [7.2, 0, 1.0], targetSize: 0.9, yAlign: 'bottom' });
+      { position: [6.0, 0, 1.0], targetSize: 0.7, yAlign: 'bottom' });
     mountTripoModel(this.group, 'popcorn_bucket',
-      { position: [7.2, 0.85, 1.0], targetSize: 0.45, yAlign: 'bottom' });
-    mountTripoModel(this.group, 'popcorn_machine',
-      { position: [7.6, 0, 4.6], rotationY: -Math.PI / 2,
-        targetSize: 1.5, yAlign: 'bottom' });
+      { position: [6.0, 0.6, 1.0], targetSize: 0.35, yAlign: 'bottom' });
 
-    // ── Wall art on side walls (between the sconce pairs) ────
+    // Popcorn cart against the right wall behind the recliners.
+    // Right wall interior at x = +9; the cart's depth axis runs
+    // along X after rotationY=+π/2, so its back rests near the
+    // wall while the glass display faces the room (front = -X).
+    mountTripoModel(this.group, 'popcorn_machine',
+      { position: [8.0, 0, 5.0], rotationY: Math.PI / 2,
+        targetSize: 1.4, yAlign: 'bottom' });
+
+    // ── Wall art ─────────────────────────────────────────────
+    // Mounted flush on the side walls (interior x=±9). Posters use
+    // rotationY = ∓π/2 so the printed face points into the room
+    // (left wall → +X, right wall → -X). Centre is offset from the
+    // wall by 8cm so the GLB's small depth never punches through.
     mountTripoModel(this.group, 'movie_poster_classic', {
-      position: [-8.85, 1.95, 0], rotationY:  Math.PI / 2,
-      targetSize: 1.7, yAlign: 'center',
+      position: [-8.92, 2.0, 0], rotationY: -Math.PI / 2,
+      targetSize: 1.6, yAlign: 'center',
     });
     mountTripoModel(this.group, 'movie_poster_modern', {
-      position: [ 8.85, 1.95, 0], rotationY: -Math.PI / 2,
-      targetSize: 1.7, yAlign: 'center',
+      position: [ 8.92, 2.0, 0], rotationY:  Math.PI / 2,
+      targetSize: 1.6, yAlign: 'center',
     });
 
-    // ── Wall sconces (4): paired around each side-wall poster ─
+    // ── Wall sconces (4): a pair flanking each poster ────────
+    // Same +X / -X room-facing logic as the posters. Smaller
+    // targetSize (0.5) so the mounting plate hugs the wall.
     const sconceSpec = [
-      { p: [-8.85, 2.6, -3.5], r:  Math.PI / 2 },
-      { p: [-8.85, 2.6,  3.5], r:  Math.PI / 2 },
-      { p: [ 8.85, 2.6, -3.5], r: -Math.PI / 2 },
-      { p: [ 8.85, 2.6,  3.5], r: -Math.PI / 2 },
+      { p: [-8.92, 2.6, -3.0], r: -Math.PI / 2 },
+      { p: [-8.92, 2.6,  3.0], r: -Math.PI / 2 },
+      { p: [ 8.92, 2.6, -3.0], r:  Math.PI / 2 },
+      { p: [ 8.92, 2.6,  3.0], r:  Math.PI / 2 },
     ];
     for (const s of sconceSpec) {
       mountTripoModel(this.group, 'wall_sconce_theater', {
         position: s.p, rotationY: s.r,
-        targetSize: 0.55, yAlign: 'center',
+        targetSize: 0.5, yAlign: 'center',
       });
     }
 
     // ── Proscenium curtains — flanking the screen ────────────
-    // Heavy red velvet drapes pulled back with gold tassels frame the
-    // big screen and hide the seam between bezel and back wall.
+    // Hung on the back wall (z = -7.4, just in front of the
+    // wall plane at -8) and rotated to face the audience (front
+    // = +Z, so rotationY = π). Inset just outside the screen
+    // bezel (frame half-width 5.15) so they frame but never
+    // cover the picture.
     const wallZ = -7.85;
     mountTripoModel(this.group, 'theater_curtain_red', {
-      position: [-6.4, 0, wallZ + 0.4], rotationY: 0,
-      targetSize: 5.5, yAlign: 'bottom',
+      position: [-5.6, 0, wallZ + 0.45], rotationY: Math.PI,
+      fitHeight: 4.5, yAlign: 'bottom',
     });
     mountTripoModel(this.group, 'theater_curtain_red', {
-      position: [ 6.4, 0, wallZ + 0.4], rotationY: 0,
-      targetSize: 5.5, yAlign: 'bottom',
+      position: [ 5.6, 0, wallZ + 0.45], rotationY: Math.PI,
+      fitHeight: 4.5, yAlign: 'bottom',
     });
 
     this.onReady();
@@ -1511,6 +1532,11 @@ class LeisureVRRoom extends VRRoom {
       screenMat.needsUpdate  = true;
     };
     window.addEventListener('ht:load', this._onHTLoad);
+    // If the player previously loaded a clip in another visit, the
+    // shared <video> element already has a valid src — bind right
+    // now so the screen doesn't sit on the idle slate while waiting
+    // for the next ht:load event.
+    if (window.HomeTheater?.isReady?.()) this._onHTLoad();
 
     // Glow accent in front of the screen — kept faintly cool so it
     // still reads as "powered on" video light, but lowered to 0.35
@@ -1555,8 +1581,11 @@ class LeisureVRRoom extends VRRoom {
         this.group.add(ring);
       }
     };
-    buildTower(-(frameW / 2 + 0.85));
-    buildTower( (frameW / 2 + 0.85));
+    // Pushed out far enough (1.7m beyond the bezel edge) that they
+    // sit clear of the proscenium curtains at x = ±5.6, leaving a
+    // visible ~0.4m gap on each side of the screen.
+    buildTower(-(frameW / 2 + 1.7));
+    buildTower( (frameW / 2 + 1.7));
 
     // Subwoofer — squat box centred under the screen.
     const sub = new THREE.Mesh(
@@ -2105,7 +2134,7 @@ class GamesVRRoom extends VRRoom {
 
   // ────────────────────────────────────────────────────────────
   //  Update hook — animate confetti / banner / chess pieces.
-  // ────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────��──────
   update(delta, camWorld) {
     super.update(delta, camWorld);
     this._tickConfetti(delta);
@@ -4285,7 +4314,7 @@ class GamesVRRoom extends VRRoom {
     ceiling.position.y = height;
     this.group.add(ceiling);
 
-    // ── Light rig ────────────────────────────────────────────────
+    // ── Light rig ──────────────────────────────────────────────���─
     // 1. HemisphereLight (warm sky / cool floor) for natural fill —
     //    keeps shadows from going pitch-black without flattening.
     const hemi = new THREE.HemisphereLight(0xFFD4A8, 0x1F1730, 0.50);

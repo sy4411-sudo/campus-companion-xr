@@ -23,25 +23,28 @@
 // ============================================================
 const HomeTheater = (() => {
   // ── On-screen clips (mp4 direct links, play in 3D screen) ─
-  // Google Drive sharing links are converted to direct-download
-  // form `uc?export=download&id=FILE_ID`. If the browser refuses
-  // the CORS preflight needed for VideoTexture, we automatically
-  // fall back to opening Drive's /preview page in a popup so the
-  // user still gets to watch the clip.
+  // The mp4 bytes are streamed through our same-origin
+  // /api/video-proxy?id=… endpoint. Drive itself does NOT send the
+  // CORS headers required for `<video crossorigin="anonymous">` →
+  // `THREE.VideoTexture` GPU uploads, so without the proxy the
+  // cinema screen would render black even when audio plays.
+  // `fallback` opens Drive's /preview page in a popup as a safety
+  // net for environments where the proxy is unreachable (offline /
+  // local dev without Vercel functions running).
   const SCREEN_CLIPS = [
     {
       title: '《天空之城》剪辑 · Castle in the Sky',
-      src: 'https://drive.google.com/uc?export=download&id=1nnOb541EaREf6KtEWDXO5_D7cAu76Quj',
+      src: '/api/video-proxy?id=1nnOb541EaREf6KtEWDXO5_D7cAu76Quj',
       fallback: 'https://drive.google.com/file/d/1nnOb541EaREf6KtEWDXO5_D7cAu76Quj/preview',
     },
     {
       title: '《心灵捕手》剪辑 · Good Will Hunting',
-      src: 'https://drive.google.com/uc?export=download&id=107Y1T8QiExo85yT0B4RarPRBqd-dTy87',
+      src: '/api/video-proxy?id=107Y1T8QiExo85yT0B4RarPRBqd-dTy87',
       fallback: 'https://drive.google.com/file/d/107Y1T8QiExo85yT0B4RarPRBqd-dTy87/preview',
     },
     {
       title: '《绿皮书》剪辑 · Green Book',
-      src: 'https://drive.google.com/uc?export=download&id=1GPIVLY5EHqzOs4ZftdXvnWhvOkbbUdFc',
+      src: '/api/video-proxy?id=1GPIVLY5EHqzOs4ZftdXvnWhvOkbbUdFc',
       fallback: 'https://drive.google.com/file/d/1GPIVLY5EHqzOs4ZftdXvnWhvOkbbUdFc/preview',
     },
   ];
