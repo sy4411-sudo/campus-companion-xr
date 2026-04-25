@@ -36,6 +36,16 @@ export class XRManager {
     this.snapTurnAngle   = Math.PI/6;  // 30°
     this._snapTurnPrimed = true;       // ready for the next snap-turn
     this._lastFrameTime  = 0;
+
+    // ── Smooth (velocity-based) forward/back locomotion ──────
+    // _currentMoveSpeed is a signed scalar in m/s along the user's
+    // current head-forward direction. Each frame it eases toward a
+    // target speed derived from the left stick's Y axis, giving real
+    // ramp-up when the player pushes the stick and ramp-down (coast)
+    // when they let go — no more on/off teleport-style movement.
+    this._currentMoveSpeed = 0;
+    this.moveAccel         = 9.0;   // m/s² when stick is pushed
+    this.moveDecel         = 12.0;  // m/s² when stick is released (faster stop)
     // Reusable vectors so the per-frame loop doesn't allocate
     this._tmpFwd   = new THREE.Vector3();
     this._tmpRight = new THREE.Vector3();
@@ -244,49 +254,77 @@ export class XRManager {
   }
 
   // ── Thumbstick locomotion ─────────────────────────────────
-  //   Left stick   →  game-like FPS movement (forward/back/strafe), head-relative.
+  //   Left stick Y →  smooth forward/back along current head facing
+  //                   (no strafe — only the axis the player is looking).
   //   Right stick X → comfort snap-turn (30°), flicked.
+  // Movement uses velocity-based easing (acceleration on push,
+  // deceleration on release) so motion ramps in and out gently
+  // instead of snapping on/off — much more comfortable for VR.
   // Movement is clamped against this.movementBounds so the user can't walk
   // through walls.
   _updateLocomotion(dt) {
     if (dt <= 0) return;
     const session = this.renderer.xr.getSession?.();
-    if (!session?.inputSources) return;
+    if (!session?.inputSources) {
+      // No active session = make sure the velocity is parked at 0.
+      this._currentMoveSpeed = 0;
+      return;
+    }
 
     const dead = 0.18;
     const xrCam = this.renderer.xr.getCamera();
 
+    // Find the left-controller stick Y (the only stick driving translation
+    // now). If the runtime doesn't report handedness yet we fall back to
+    // whichever input source has the largest |Y| magnitude so the player
+    // is never stranded.
+    let stickY = 0;
+    let leftSrc = null, fallbackY = 0;
     for (const src of session.inputSources) {
-      const [ax, ay] = this._readStick(src.gamepad);
+      const [, y] = this._readStick(src.gamepad);
+      if (src.handedness === 'left') { leftSrc = src; stickY = y; }
+      else if (!src.handedness && Math.abs(y) > Math.abs(fallbackY)) fallbackY = y;
+    }
+    if (!leftSrc) stickY = fallbackY;
 
-      if (src.handedness === 'left' || (!src.handedness && Math.hypot(ax, ay) > dead)) {
-        if (Math.abs(ax) < dead && Math.abs(ay) < dead) continue;
+    // Convert stick deflection → desired speed (m/s). ay > 0 when the
+    // user pulls the stick toward themselves, which feels like
+    // "backward", so we flip the sign: forward = -y.
+    let targetSpeed = 0;
+    if (Math.abs(stickY) > dead) {
+      const norm = (Math.abs(stickY) - dead) / (1 - dead);   // 0..1
+      const eased = norm * norm;                             // ease-in fine control
+      targetSpeed = -Math.sign(stickY) * eased * this.moveSpeed;
+    }
 
-        // Forward direction = head facing, projected onto the XZ plane.
-        xrCam.getWorldDirection(this._tmpFwd);
-        this._tmpFwd.y = 0;
-        if (this._tmpFwd.lengthSq() < 1e-6) continue;
+    // Ease the actual speed toward the target. Use a faster decel rate
+    // when the player has released the stick so the avatar doesn't
+    // coast forever, but a softer accel rate when ramping up so VR
+    // motion sickness is minimised.
+    const slowingDown = (Math.abs(targetSpeed) < Math.abs(this._currentMoveSpeed));
+    const rate = slowingDown ? this.moveDecel : this.moveAccel;
+    const maxStep = rate * dt;
+    const diff = targetSpeed - this._currentMoveSpeed;
+    if (Math.abs(diff) <= maxStep) this._currentMoveSpeed = targetSpeed;
+    else                           this._currentMoveSpeed += Math.sign(diff) * maxStep;
+
+    // If we still have any meaningful velocity, translate the rig
+    // along the *current* head facing (so turning your head while
+    // moving curves the path naturally).
+    if (Math.abs(this._currentMoveSpeed) > 1e-3) {
+      xrCam.getWorldDirection(this._tmpFwd);
+      this._tmpFwd.y = 0;
+      if (this._tmpFwd.lengthSq() >= 1e-6) {
         this._tmpFwd.normalize();
-        // Right = forward rotated -90° around +Y. With forward (fx,0,fz)
-        // that is (-fz, 0, fx). The previous code had this inverted, which
-        // made strafing go the wrong way. Now: stick-right → move right.
-        this._tmpRight.set(-this._tmpFwd.z, 0, this._tmpFwd.x);
-
-        // Apply a soft radial deadzone so light drift doesn't creep.
-        const mag = Math.hypot(ax, ay);
-        const norm = (mag - dead) / (1 - dead);            // 0..1
-        const scale = norm * norm;                          // ease-in for fine control
-        const step = this.moveSpeed * dt * scale;
-        // ay > 0 = stick pulled back → backward; so multiply forward by -ay.
-        const forwardAmt = -ay / mag * step;
-        const strafeAmt  =  ax / mag * step;
-
-        this._tmpMove
-          .copy(this._tmpFwd).multiplyScalar(forwardAmt)
-          .addScaledVector(this._tmpRight, strafeAmt);
-
+        this._tmpMove.copy(this._tmpFwd).multiplyScalar(this._currentMoveSpeed * dt);
         this._applyMoveWithCollision(xrCam, this._tmpMove);
-      } else if (src.handedness === 'right') {
+      }
+    }
+
+    // Right-stick branch (snap turn) is independent of locomotion.
+    for (const src of session.inputSources) {
+      const [ax] = this._readStick(src.gamepad);
+      if (src.handedness === 'right') {
         // Snap turn on flick; require return to centre before re-firing.
         const fireT = 0.7, resetT = 0.3;
         if (this._snapTurnPrimed && Math.abs(ax) > fireT) {
