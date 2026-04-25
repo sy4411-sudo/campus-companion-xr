@@ -3,7 +3,7 @@
  */
 import * as THREE from 'three';
 import { AICompanion } from './ai-companion.js';
-import { VRColoringGame, VRGomokuGame, VRVideoPanel } from './vr-interactive.js';
+import { VRVideoPanel } from './vr-interactive.js';
 import { mountTripoModel } from './tripo-loader.js';
 
 // ============================================================
@@ -221,7 +221,7 @@ class ChatVRRoom extends VRRoom {
     // rotationY = -π/2    → 物体正面朝 +X（朝向右侧）
     // rotationY = +π/2    → 物体正面朝 -X（朝向左侧）
     //
-    // ���家从 z=+9 入场，朝 -Z 走。所以��望玩家看到正面的物件用 π，
+    // ����家从 z=+9 入场，朝 -Z 走。所以��望玩家看到正面的物件用 π，
     // 朝向沙发/壁炉那侧（-Z）的物件用 0。
 
     // ── 地毯（用 PlaneGeometry + Canvas 纹理，确保完全平铺地面）─
@@ -1173,117 +1173,375 @@ class GamesVRRoom extends VRRoom {
     light3.position.set(0, 4, -4);
     this.group.add(light3);
     
-    // Game table.
-    mountTripoModel(this.group, 'pedestal_table_walnut',
-      { position: [0, 0, 0], targetSize: 1.6, yAlign: 'bottom' });
-
-    // Chess board on top — keep as a flat textured plane so it could later be
-    // wired up to interaction without fighting a generated mesh.
-    const boardMat = new THREE.MeshStandardMaterial({ color: 0x2F2F2F, roughness: 0.5 });
-    const board = new THREE.Mesh(new THREE.BoxGeometry(1, 0.05, 1), boardMat);
-    board.position.set(0, 0.83, 0);
-    this.group.add(board);
-    const whiteMat = new THREE.MeshStandardMaterial({ color: 0xFFFFFF, roughness: 0.5 });
-    const blackMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.5 });
-    for (let i = 0; i < 8; i++) {
-      for (let j = 0; j < 8; j++) {
-        const squareMat = (i + j) % 2 === 0 ? whiteMat : blackMat;
-        const square = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), squareMat);
-        square.rotation.x = -Math.PI / 2;
-        square.position.set(-0.42 + i * 0.12, 0.86, -0.42 + j * 0.12);
-        this.group.add(square);
-      }
-    }
-
-    // Chairs around the table — every chair faces the table at origin
-    // (default Tripo front = -Z, so add π for north chair, etc.).
-    [
-      [0, 0, -1.2, Math.PI],         // north of table → face +Z (toward origin)
-      [0, 0,  1.2, 0],               // south of table → face -Z
-      [-1.2, 0, 0, -Math.PI / 2],    // west of table  → face +X
-      [ 1.2, 0, 0,  Math.PI / 2],    // east of table  → face -X
-    ].forEach(([x, y, z, ry]) => {
-      mountTripoModel(this.group, 'chair_blue', {
-        position: [x, y, z], rotationY: ry, targetSize: 0.9, yAlign: 'bottom',
-      });
-    });
+    // ── Wall-hugging Tripo decorations ───────────────────────────
+    // Every floor-standing item is pushed close to its wall so the
+    // playing area in the centre stays clear for the giant floor board.
 
     // Two arcade cabinets on the back wall — screens face the player (+Z),
     // each cabinet tilted slightly inward toward room center.
     mountTripoModel(this.group, 'arcade_blue',
-      { position: [-6, 0, -6], rotationY: Math.PI + Math.PI / 8,
+      { position: [-6, 0, -7.55], rotationY: Math.PI + Math.PI / 8,
         targetSize: 2.2, yAlign: 'bottom' });
     mountTripoModel(this.group, 'arcade_pink',
-      { position: [6, 0, -6], rotationY: Math.PI - Math.PI / 8,
+      { position: [6, 0, -7.55], rotationY: Math.PI - Math.PI / 8,
         targetSize: 2.2, yAlign: 'bottom' });
 
-    // Bean bags in the front of the room — face inward toward the action
-    // (default front = -Z, slight inward yaw so the two cushions angle in).
-    mountTripoModel(this.group, 'bean_bag',
-      { position: [-4, 0, 4], rotationY: -Math.PI / 6,
-        targetSize: 1.0, yAlign: 'bottom' });
-    mountTripoModel(this.group, 'bean_bag',
-      { position: [4, 0, 4], rotationY: Math.PI / 6,
-        targetSize: 1.0, yAlign: 'bottom' });
-
-    // ── New furniture (Tripo): widen the game-room vibe ──────────
-    // Pinball machine on the back wall between the arcades, faces +Z (player).
+    // Pinball machine pushed flush against the back wall, faces +Z.
     mountTripoModel(this.group, 'pinball_machine',
-      { position: [0, 0, -7], rotationY: Math.PI,
+      { position: [0, 0, -7.6], rotationY: Math.PI,
         targetSize: 1.8, yAlign: 'bottom' });
 
     // Glowing "GAME ON" neon sign high on the back wall, faces +Z.
     mountTripoModel(this.group, 'neon_game_sign',
-      { position: [0, 3.6, -7.85], rotationY: Math.PI,
+      { position: [0, 3.6, -7.9], rotationY: Math.PI,
         targetSize: 2.4, yAlign: 'center' });
 
-    // Dartboard cabinet wall-mounted on the left wall (back side),
-    // clear of the coloring game at z=0. Faces +X (room interior).
+    // Dartboard cabinet wall-mounted on the left wall, faces +X.
     mountTripoModel(this.group, 'dartboard_cabinet',
-      { position: [-7.85, 1.9, -3.5], rotationY: -Math.PI / 2,
+      { position: [-7.9, 1.9, -3.5], rotationY: -Math.PI / 2,
         targetSize: 1.1, yAlign: 'center' });
 
-    // Snack & soda vending machine on the right wall near the entrance,
-    // faces -X (room interior). Sits below the gomoku game (z=0).
+    // Snack & soda vending machine on the right wall (entrance side).
     mountTripoModel(this.group, 'vending_machine_snacks',
-      { position: [7.4, 0, 5], rotationY: Math.PI / 2,
+      { position: [7.6, 0, 5], rotationY: Math.PI / 2,
         targetSize: 2.0, yAlign: 'bottom' });
 
-    // Trophy shelf on the left wall near the entrance, faces +X.
+    // Trophy shelf on the left wall (entrance side).
     mountTripoModel(this.group, 'trophy_shelf',
-      { position: [-7.4, 0, 5], rotationY: -Math.PI / 2,
+      { position: [-7.6, 0, 5], rotationY: -Math.PI / 2,
         targetSize: 1.4, yAlign: 'bottom' });
-    
-    // Interactive coloring game on left wall
-    this.coloringGame = new VRColoringGame(this.group, {
-      position: new THREE.Vector3(-7.5, 1.6, 0),
-      width: 1.4,
-      height: 1.4,
-      onInteract: () => {
-        if (this.companion) {
-          this.companion.setExpression('happy');
-          setTimeout(() => this.companion.setExpression('idle'), 1500);
-        }
-      }
+
+    // ── Giant floor game board (~85% of the 16×16 floor) ────────
+    // 14.75 × 14.75 ≈ 217.6 m² / 256 m² ≈ 85.0%.
+    this._buildFloorBoard(14.75);
+
+    // ── Two front-facing mode buttons on the back wall ──────────
+    // Slot them between the pinball (centre) and the arcades (corners),
+    // at eye level for both seated and standing players.
+    this._buildModeButton({
+      position: new THREE.Vector3(-3, 1.7, -7.85),
+      label: '五子棋 / 围棋',
+      sublabel: 'GO BOARD',
+      accent: 0xFFAA00,
+      onSelect: () => this._setBoardMode('go'),
     });
-    this.coloringGame.group.rotation.y = Math.PI / 2;
-    this.interactables.push(this.coloringGame.mesh);
-    
-    // Interactive gomoku game on right wall
-    this.gomokuGame = new VRGomokuGame(this.group, {
-      position: new THREE.Vector3(7.5, 1.6, 0),
-      width: 1.4,
-      height: 1.4,
-      onInteract: (action, data) => {
-        if (action === 'win' && this.companion) {
-          this.companion.setExpression(data.player === 1 ? 'happy' : 'empathy');
-        }
-      }
+    this._buildModeButton({
+      position: new THREE.Vector3(3, 1.7, -7.85),
+      label: '国际象棋',
+      sublabel: 'CHESS BOARD',
+      accent: 0x00C8FF,
+      onSelect: () => this._setBoardMode('chess'),
     });
-    this.gomokuGame.group.rotation.y = -Math.PI / 2;
-    this.interactables.push(this.gomokuGame.mesh);
-    
+
     this.onReady();
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Floor board: a single thin slab whose top texture is swappable
+  //  between Go (19×19 wood + grid) and Chess (8×8 walnut + cream).
+  // ────────────────────────────────────────────────────────────
+  _buildFloorBoard(side) {
+    // Pre-bake two high-resolution canvas textures; swap material.map
+    // when the player presses a mode button.
+    this._boardTextures = {
+      go: this._makeGoBoardTexture(),
+      chess: this._makeChessBoardTexture(),
+    };
+
+    // Slab body — slim ply giving the board a real edge, like furniture.
+    const slabGeom = new THREE.BoxGeometry(side, 0.06, side);
+    const slabMat = new THREE.MeshStandardMaterial({
+      color: 0xFFFFFF,
+      roughness: 0.55,
+      metalness: 0.0,
+    });
+    const slab = new THREE.Mesh(slabGeom, slabMat);
+    slab.position.set(0, 0.04, 0);
+    this.group.add(slab);
+
+    // Separate top mesh that owns the texture so the slab sides keep a
+    // neutral colour even after we swap board art.
+    const topGeom = new THREE.PlaneGeometry(side, side);
+    const topMat = new THREE.MeshStandardMaterial({
+      color: 0xFFFFFF,
+      roughness: 0.55,
+      metalness: 0.0,
+      map: this._boardTextures.go,
+    });
+    const top = new THREE.Mesh(topGeom, topMat);
+    top.rotation.x = -Math.PI / 2;
+    top.position.set(0, 0.071, 0);
+    this.group.add(top);
+
+    this._boardTopMesh = top;
+    this._boardMode = 'go';
+  }
+
+  _setBoardMode(mode) {
+    if (!this._boardTopMesh || !this._boardTextures?.[mode]) return;
+    if (this._boardMode === mode) return;
+    this._boardMode = mode;
+    this._boardTopMesh.material.map = this._boardTextures[mode];
+    this._boardTopMesh.material.needsUpdate = true;
+
+    // Friendly companion reaction so the swap feels alive.
+    if (this.companion) {
+      this.companion.setExpression('happy');
+      setTimeout(() => this.companion.setExpression('idle'), 1200);
+    }
+  }
+
+  _makeGoBoardTexture() {
+    const size = 2048;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    // Warm tatami-yellow wood gradient — slightly lighter at centre.
+    const grad = ctx.createRadialGradient(size / 2, size / 2, size * 0.1, size / 2, size / 2, size * 0.7);
+    grad.addColorStop(0, '#E9C28B');
+    grad.addColorStop(1, '#C99A5B');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+
+    // Subtle wood-grain streaks.
+    ctx.globalAlpha = 0.12;
+    ctx.strokeStyle = '#7A4A1F';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 60; i++) {
+      const y = Math.random() * size;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.bezierCurveTo(size * 0.33, y + (Math.random() - 0.5) * 30,
+                        size * 0.66, y + (Math.random() - 0.5) * 30,
+                        size, y + (Math.random() - 0.5) * 20);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // 19×19 grid (standard go board), inset with a clear margin.
+    const margin = size * 0.06;
+    const inner = size - margin * 2;
+    const cells = 18; // 19 lines → 18 cells
+    const step = inner / cells;
+    ctx.strokeStyle = '#1A1208';
+    ctx.lineWidth = 4;
+    for (let i = 0; i <= cells; i++) {
+      const p = margin + i * step;
+      ctx.beginPath(); ctx.moveTo(margin, p); ctx.lineTo(size - margin, p); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p, margin); ctx.lineTo(p, size - margin); ctx.stroke();
+    }
+
+    // Hoshi star points (9 standard positions on a 19×19 board).
+    ctx.fillStyle = '#1A1208';
+    [3, 9, 15].forEach(ix => {
+      [3, 9, 15].forEach(iy => {
+        const x = margin + ix * step;
+        const y = margin + iy * step;
+        ctx.beginPath();
+        ctx.arc(x, y, 10, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    });
+
+    // Decorative outer frame.
+    ctx.strokeStyle = '#5C3A14';
+    ctx.lineWidth = 14;
+    ctx.strokeRect(margin / 2, margin / 2, size - margin, size - margin);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  _makeChessBoardTexture() {
+    const size = 2048;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    // Dark walnut frame.
+    ctx.fillStyle = '#3B2412';
+    ctx.fillRect(0, 0, size, size);
+
+    // Inset 8×8 board.
+    const margin = size * 0.05;
+    const inner = size - margin * 2;
+    const cell = inner / 8;
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const dark = (r + c) % 2 === 1;
+        ctx.fillStyle = dark ? '#7A4A1F' : '#F1DBA8';
+        ctx.fillRect(margin + c * cell, margin + r * cell, cell, cell);
+      }
+    }
+
+    // Subtle wood-grain shading on light squares.
+    ctx.globalAlpha = 0.08;
+    ctx.fillStyle = '#7A4A1F';
+    for (let i = 0; i < 200; i++) {
+      const x = margin + Math.random() * inner;
+      const y = margin + Math.random() * inner;
+      ctx.fillRect(x, y, 4 + Math.random() * 6, 1);
+    }
+    ctx.globalAlpha = 1;
+
+    // Gold trim around the playing area.
+    ctx.strokeStyle = '#D9B16A';
+    ctx.lineWidth = 8;
+    ctx.strokeRect(margin, margin, inner, inner);
+
+    // File/rank labels (a–h, 1–8).
+    ctx.fillStyle = '#E9D7B0';
+    ctx.font = `bold ${Math.floor(size * 0.022)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    for (let i = 0; i < 8; i++) {
+      const cx = margin + cell * (i + 0.5);
+      ctx.fillText(files[i], cx, margin / 2);
+      ctx.fillText(files[i], cx, size - margin / 2);
+      const cy = margin + cell * (i + 0.5);
+      ctx.fillText(String(8 - i), margin / 2, cy);
+      ctx.fillText(String(8 - i), size - margin / 2, cy);
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Mode buttons: front-facing arcade plates with a glowing edge
+  //  ring. Hooked into both VR (xr.registerInteractable) and
+  //  desktop (scene.addClickable) via userData.onClick.
+  // ────────────────────────────────────────────────────────────
+  _buildModeButton({ position, label, sublabel, accent, onSelect }) {
+    const w = 1.3, h = 0.85, d = 0.08;
+    const accentHex = `#${accent.toString(16).padStart(6, '0')}`;
+
+    const panel = new THREE.Group();
+    panel.position.copy(position);
+    // Buttons sit on the back wall (-Z) and face the player (+Z).
+    panel.rotation.y = Math.PI;
+    this.group.add(panel);
+
+    // Glow halo: slightly larger flat plane behind the panel face.
+    const haloGeom = new THREE.PlaneGeometry(w * 1.18, h * 1.22);
+    const haloMat = new THREE.MeshBasicMaterial({
+      color: accent,
+      transparent: true,
+      opacity: 0.35,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const halo = new THREE.Mesh(haloGeom, haloMat);
+    halo.position.set(0, 0, 0.001);
+    panel.add(halo);
+
+    // Front face with the label texture.
+    const tex = this._makeButtonTexture(label, sublabel, accentHex);
+    const faceGeom = new THREE.BoxGeometry(w, h, d);
+    const faceMat = new THREE.MeshStandardMaterial({
+      color: 0xFFFFFF,
+      map: tex,
+      roughness: 0.4,
+      metalness: 0.15,
+      emissive: accent,
+      emissiveIntensity: 0.25,
+    });
+    // Apply texture only to the front face by giving the box per-face mats.
+    const sideMat = new THREE.MeshStandardMaterial({
+      color: 0x1B1B22,
+      roughness: 0.7,
+      metalness: 0.2,
+      emissive: accent,
+      emissiveIntensity: 0.18,
+    });
+    const faceMats = [
+      sideMat, sideMat, sideMat, sideMat,
+      faceMat,  // +Z front
+      sideMat,  // -Z back
+    ];
+    const face = new THREE.Mesh(faceGeom, faceMats);
+    face.position.set(0, 0, d * 0.6);
+    panel.add(face);
+
+    // A tiny accent point light gives the button a real "neon" feel.
+    const buttonLight = new THREE.PointLight(accent, 0.6, 3.5);
+    buttonLight.position.set(0, 0, 0.6);
+    panel.add(buttonLight);
+
+    // Make the entire panel clickable. The interaction system walks up
+    // the parent chain looking for userData.onClick, so registering the
+    // visible front face is enough.
+    face.userData.onClick = () => onSelect();
+    this.interactables.push(face);
+
+    // Light bounce on click for clear feedback.
+    const originalIntensity = buttonLight.intensity;
+    const origEmissive = faceMat.emissiveIntensity;
+    face.userData._pulse = () => {
+      buttonLight.intensity = originalIntensity * 2.4;
+      faceMat.emissiveIntensity = 0.9;
+      setTimeout(() => {
+        buttonLight.intensity = originalIntensity;
+        faceMat.emissiveIntensity = origEmissive;
+      }, 220);
+    };
+    const userOnClick = face.userData.onClick;
+    face.userData.onClick = () => {
+      face.userData._pulse();
+      userOnClick();
+    };
+  }
+
+  _makeButtonTexture(label, sublabel, accentHex) {
+    const w = 1024, h = 640;
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+
+    // Dark plate background with a soft vertical gradient.
+    const bg = ctx.createLinearGradient(0, 0, 0, h);
+    bg.addColorStop(0, '#101019');
+    bg.addColorStop(1, '#1F1F2C');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    // Glowing border ring in the accent colour.
+    ctx.strokeStyle = accentHex;
+    ctx.lineWidth = 12;
+    ctx.shadowColor = accentHex;
+    ctx.shadowBlur = 28;
+    ctx.strokeRect(28, 28, w - 56, h - 56);
+    ctx.shadowBlur = 0;
+
+    // Big bilingual label.
+    ctx.fillStyle = '#FFFFFF';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 96px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText(label, w / 2, h / 2 - 50);
+
+    ctx.fillStyle = accentHex;
+    ctx.font = 'bold 56px "Helvetica Neue", Arial, sans-serif';
+    ctx.fillText(sublabel, w / 2, h / 2 + 60);
+
+    // Small "TAP / TRIGGER" hint.
+    ctx.fillStyle = '#9090A8';
+    ctx.font = '32px "Helvetica Neue", Arial, sans-serif';
+    ctx.fillText('点击切换  ·  TAP TO SWITCH', w / 2, h - 70);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    tex.needsUpdate = true;
+    return tex;
   }
 
   getSpawnPoint() {
