@@ -205,6 +205,45 @@ export const MODELS = {
       'a classic red and white striped paper popcorn bucket overflowing with golden buttered popcorn, ' +
       'cinema theme, photorealistic 3D render, single isolated object',
   },
+  theater_curtain_red: {
+    prompt:
+      'red velvet theater curtain drape with golden tassel tieback, ' +
+      'tall vertical pleats, photorealistic 3D model',
+  },
+  recliner_loveseat: {
+    prompt:
+      'a plush deep brown leather two-seat home-cinema recliner loveseat, ' +
+      'oversized padded armrests with built-in cup holders, soft headrests, ' +
+      'reclining backrests, modern luxury home theater seating, front-facing, ' +
+      'photorealistic 3D furniture render, single isolated object',
+  },
+  movie_poster_classic: {
+    prompt:
+      'a framed vintage classic black and white movie poster, dramatic typography, ' +
+      'ornate gold picture frame, hanging on a wall, retro cinema decor, ' +
+      'photorealistic 3D render, single isolated object',
+  },
+  movie_poster_modern: {
+    prompt:
+      'a framed modern minimalist movie poster with bold colourful illustration ' +
+      'and large stylised typography, sleek matte black picture frame, ' +
+      'hanging on a wall, contemporary cinema decor, photorealistic 3D render, ' +
+      'single isolated object',
+  },
+  popcorn_machine: {
+    prompt:
+      'a vintage red and gold popcorn cart machine on small wheels, glass display case ' +
+      'full of fluffy golden popcorn, ornate gold trim and finials, marquee sign on top ' +
+      'reading POPCORN, classic 1950s movie theatre snack bar piece, front-facing, ' +
+      'photorealistic 3D render, single isolated object',
+  },
+  wall_sconce_theater: {
+    prompt:
+      'an elegant brass art-deco wall sconce with a frosted amber glass shade, ' +
+      'two warm glowing bulbs casting soft light upward, polished brass mounting plate, ' +
+      'classic movie theatre lobby fixture, photorealistic 3D render, ' +
+      'single isolated object on transparent background',
+  },
 
   // ── HealingVRRoom ───────────────────────────────────────────
   zen_rock_garden: {
@@ -298,7 +337,25 @@ export const MODELS = {
       'isolated on transparent background',
   },
 
-  // ── AI companion (chat zone) ────────────────────────────────
+  // ── Hub / Lobby curated decorations ───────────────────────
+  // Replace the old plant_tropical (felt out of place in a marble lobby)
+  // with a pair of more refined, hotel-lobby-grade fixtures.
+  marble_urn_vase: {
+    prompt:
+      'a tall ornate ivory marble pedestal urn vase filled with an elegant ' +
+      'bouquet of white roses and eucalyptus, classical fluted base with ' +
+      'soft gold trim, hotel lobby decoration, photorealistic 3D render, ' +
+      'single isolated object on transparent background',
+  },
+  art_deco_floor_lamp: {
+    prompt:
+      'an elegant art deco brass floor lamp with a pleated cream silk shade ' +
+      'glowing warm amber, slender fluted column, weighted round base, ' +
+      'classic luxury hotel lobby fixture, photorealistic 3D render, ' +
+      'single isolated object on transparent background',
+  },
+
+  // ── AI companion (chat zone) ──────────────────────────────
   companion_mascot: {
     prompt:
       'a chubby cute glowing pastel-coral fluffy mascot orb with two big sparkling eyes, ' +

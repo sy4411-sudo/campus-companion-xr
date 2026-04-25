@@ -10,14 +10,12 @@ import { VRRoomManager } from './vr-rooms.js';
 // ── DOM refs ──────────────────────────────────────────────────
 const loadingScreen  = document.getElementById('loading-screen');
 const loadingBar     = document.querySelector('.loading-progress');
-const avatarSelectEl = document.getElementById('avatar-select');
 const zoneIndicator  = document.getElementById('zone-indicator');
 const zoneIconEl     = document.getElementById('zone-icon');
 const zoneNameEl     = document.getElementById('zone-name');
 const zoneTooltip    = document.getElementById('zone-tooltip');
 const homeBtn        = document.getElementById('home-btn');
 const chatToggleBtn  = document.getElementById('chat-toggle-btn');
-const tripoStatusEl  = document.getElementById('tripo-status');
 const vrBtn          = document.getElementById('vr-btn');
 const arStudyBtn     = document.getElementById('ar-study-btn');
 const arOverlay      = document.getElementById('ar-overlay');
@@ -26,7 +24,10 @@ const voiceStatusEl  = document.getElementById('voice-status');
 
 // ── App state ─────────────────────────────────────────────────
 let scene, xrMgr, vrRoomMgr;
-let selectedGender = 'female';
+// Default kept on file because some existing UI keys are color-coded by
+// it (e.g. VRPanels chat HUD highlight). The on-screen avatar-picker is
+// gone — the hub companion orb is the same for every visitor.
+const selectedGender = 'female';
 let activeZone = null;
 // VR HUD group (created per zone entry in VR)
 let vrHUD = null;
@@ -71,7 +72,7 @@ async function boot() {
   scene.onZoneClick = handleZoneClick;
   scene.onZoneHover = handleZoneHover;
   
-  // Frame update callback for VR room manager
+  // Frame update callback for VR room manager + hub companion
   scene.onFrameUpdate = (delta, isXR, camWorld) => {
     if (vrRoomMgr && isInVRRoom) {
       vrRoomMgr.update(delta, camWorld);
@@ -81,6 +82,11 @@ async function boot() {
       if (activeRoom) {
         activeRoom.updateStudentPosition?.(camWorld);
       }
+    } else {
+      // Player is in the central hub — let the hub companion orb tick
+      // its idle/follow animation and run proximity-aware introductions
+      // for whichever zone portal the player is approaching.
+      scene.updateHubCompanion?.(delta, camWorld);
     }
   };
 
@@ -92,6 +98,7 @@ async function boot() {
     playerGroup:  scene.playerGroup,
     floorMesh:    scene.floorMesh,
     portalMeshes: scene.portalMeshes,
+    spawnPoint:   scene.spawnPoint,   // VR rig is pushed here on sessionstart
     onZoneEnter:  handleZoneClick,
     onExitXR:     handleExitXR,
   });
@@ -152,76 +159,35 @@ async function boot() {
   await sleep(500);
   loadingScreen.style.display = 'none';
 
-  showAvatarSelect();
+  startApp();
 }
 
 function progress(p) { if (loadingBar) loadingBar.style.width = `${p}%`; }
 
-// ── Avatar selection ──────────────────────────────────────────
-function showAvatarSelect() {
-  avatarSelectEl.classList.remove('hidden');
-  avatarSelectEl.classList.add('visible');
-  document.querySelectorAll('.avatar-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      selectedGender = btn.dataset.gender;
-      avatarSelectEl.classList.remove('visible');
-      avatarSelectEl.classList.add('hidden');
-      onGenderChosen(selectedGender);
-    });
-  });
-}
-
-async function onGenderChosen(gender) {
-  Chat.setGender(gender);
-  scene.setAvatarGender(gender);
-  await sleep(200);
-
-  // 直接用内置的智谱 GLM key 初始化 Agent，跳过 API 选择窗口。
+// ── App start (no avatar picker) ─────────────────────────────
+// Drop the user straight into the lobby. The hub companion orb takes
+// over the role the human placeholder + gender picker used to play.
+function startApp() {
+  Chat.setGender(selectedGender);
   Agent.setApiKey(CONFIG.ZHIPU_API_KEY);
-  Chat.open(ZONES[0]);
   Chat.systemMsg('AI 已就绪 / Zhipu GLM ready');
-  Agent.setZone('chat');
-  activeZone = ZONES[0];
-  updateZoneIndicator(ZONES[0]);
-  scene.setActiveZone('chat');
-
-  startTripoGeneration(gender);
+  // No active zone yet — the player is in the hub.
+  activeZone = null;
+  scene.setActiveZone(null);
+  // Spawn / activate the hub companion so it can greet the player and
+  // walk them through what each zone offers.
+  scene.enterHub?.();
 }
 
-// ── Tripo avatar generation ──────────────────────────────────���
-async function startTripoGeneration(gender) {
-  if (tripoStatusEl) tripoStatusEl.classList.remove('hidden');
-  try {
-    updateTripoStatus('Generating companion… 生成伴侣中…', 5);
-    const url = await TripoClient.generateModel(AVATAR_PROMPTS[gender], (status, pct) => {
-      updateTripoStatus(`${status} (${pct}%)`, pct);
-    });
-    updateTripoStatus('Loading 3D model… 加载模型中…', 95);
-    scene.loadGLBAvatar(url);
-    updateTripoStatus('Companion ready! 伴侣已就绪 ✨', 100);
-    await sleep(2000);
-  } catch (e) {
-    console.warn('[Tripo]', e);
-    updateTripoStatus('Using default avatar / 使用默认形象', 100);
-    await sleep(1200);
-  }
-  tripoStatusEl?.classList.add('hidden');
-}
-
-function updateTripoStatus(msg, pct) {
-  if (!tripoStatusEl) return;
-  const lbl = tripoStatusEl.querySelector('.tripo-label');
-  const bar = tripoStatusEl.querySelector('.tripo-bar-fill');
-  if (lbl) lbl.textContent = msg;
-  if (bar) bar.style.width = `${pct}%`;
-}
-
-// ── Zone entry ─��──────────────────────────────────────────────
+// ── Zone entry ────────────────────────────────────────────────
 function handleZoneClick(zone) {
   activeZone = zone;
   Agent.setZone(zone.id);
   scene.setActiveZone(zone.id);
   updateZoneIndicator(zone);
+  // Once the player commits to a zone, retire the hub companion so
+  // it doesn't trail along into the immersive room.
+  scene.exitHub?.();
 
   if (xrMgr.isPresenting()) {
     // VR mode
@@ -311,6 +277,8 @@ function goHome() {
   Chat.close();
   scene.setActiveZone(null);
   if (arStudyBtn) arStudyBtn.style.display = 'none';
+  // Wake the hub companion back up so it greets the returning player.
+  scene.enterHub?.();
 }
 
 function handleZoneVR(zone) {

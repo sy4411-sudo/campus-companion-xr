@@ -3,7 +3,6 @@
  */
 import * as THREE from 'three';
 import { AICompanion } from './ai-companion.js';
-import { VRVideoPanel } from './vr-interactive.js';
 import { mountTripoModel } from './tripo-loader.js';
 
 // ============================================================
@@ -221,7 +220,7 @@ class ChatVRRoom extends VRRoom {
     // rotationY = -π/2    → 物体正面朝 +X（朝向右侧）
     // rotationY = +π/2    → 物体正面朝 -X（朝向左侧）
     //
-    // ����家从 z=+9 入场���朝 -Z 走。所以��望玩家看到正面的物件用 π，
+    // ����家从 z=+9 入场����朝 -Z 走。所以��望玩家看到正面的物件用 π，
     // 朝向沙发/壁炉那侧（-Z）的物件用 0。
 
     // ── 地毯（用 PlaneGeometry + Canvas 纹理，确保完全平铺地面）─
@@ -616,7 +615,7 @@ class ChatVRRoom extends VRRoom {
     return new THREE.CanvasTexture(c);
   }
 
-  // ── 火焰 / 落地灯 flicker ─────���������─────────────────────
+  // ── 火焰 / 落地灯 flicker ─────�����������─────────────────────
   update(delta, camWorld) {
     super.update(delta, camWorld);
     const t = performance.now() * 0.001;
@@ -1003,85 +1002,1073 @@ class StudyVRRoom extends VRRoom {
 class LeisureVRRoom extends VRRoom {
   constructor(scene, options = {}) {
     super(scene, options);
+
+    // ── Companion behaviour state (mirror of ChatVRRoom) ─────
+    // The leisure-room companion 灵灵 is a chatty, warm cinephile
+    // friend who sits next to the player and reacts to the on-screen
+    // movie. Personality: enthusiastic, gentle, a little philosophical;
+    // talks bilingually (Chinese first, English alongside) so 童童-
+    // style speech bubbles read naturally for both audiences.
+    this._studentLocal = new THREE.Vector3();
+    this._hasStudent   = false;
+    // Sit a bit to the right of the player, level with the eyes when
+    // seated. y=1.05 puts the companion at chest height for a 1.6m
+    // standing user, perfect for a "sitting beside" feel.
+    this._followOffset = new THREE.Vector3(0.95, -0.55, 0.4);
+
+    // Last clip the companion has commented on, so we don't re-greet
+    // each frame whenever ht:load fires repeatedly.
+    this._lastClipIndex = -1;
+    this._lastSaidAt    = 0;
+    // Schedule of the next idle / mid-movie reaction.
+    this._idleTimer     = null;
+    // Timer for the initial "find the player & greet" sequence.
+    this._greetTimer    = null;
+
+    // Bound listeners (kept as fields so exit() can remove them).
+    this._onHTPlay  = null;
+    this._onHTPause = null;
+    this._onHTLoad2 = null;
+
+    // ── Per-clip reaction pools (keyed by SCREEN_CLIPS index) ──
+    // Lines were authored to match each clip's tone: 天空之城 nostalgic,
+    // 心灵捕手 introspective, 绿皮书 reflective on dignity & friendship.
+    // Each array is randomised so re-watching never feels canned.
+    this._clipLines = [
+      { // 0 — 天空之城 / Castle in the Sky
+        intro: [
+          '《天空之城》！\nLaputa is one of my favourites — pure wonder.',
+          '久石让的旋律一响起，整个房间都温柔了。\n这一段听一百次也不腻。',
+        ],
+        mid: [
+          '飞行石发光的样子……\n像把童年的勇气重新点亮了。',
+          'The sky here feels alive — clouds, ruins, courage.',
+          '你看希达和帕祖，他们什么都没有，\n却拥有彼此 —— 已经是最大的财富。',
+        ],
+        closing: [
+          '“天空之城”不是一个地方，\n是每个人心里那块没被现实折断的部分。',
+        ],
+      },
+      { // 1 — Good Will Hunting / 心灵捕手
+        intro: [
+          '《心灵捕手》——\nthis one always makes me sit a little closer.',
+          'Robin Williams 的眼神，\n比任何一句台词都更治愈。',
+        ],
+        mid: [
+          '"It’s not your fault." 这一句台词\n值得被反反复复听见。',
+          'Will 的天赋是真的，\n但他真正缺的是有人愿意慢下来听他说话。',
+          '我有时候觉得，被理解\n比被解决更接近治愈。',
+        ],
+        closing: [
+          'It is not your fault. \n你也值得这样温柔的一句。',
+        ],
+      },
+      { // 2 — Green Book / 绿皮书
+        intro: [
+          '《绿皮书》——\nfriendship in unlikely places, my favourite kind.',
+          'Don 博士那种克制的优雅，\n一开口就让整个画面安静下来。',
+        ],
+        mid: [
+          'Tony 把炸鸡递过去的那一刻，\n两个世界第一次真的有了交集。',
+          '"Dignity always prevails." \n这句话值得被一直记住。',
+          '看他们在路上慢慢学着理解彼此，\n比任何一段独白都动人。',
+        ],
+        closing: [
+          'Some roads change you forever.\n这就是看电影最好的样子。',
+        ],
+      },
+    ];
+
+    // Generic, mood-neutral lines used when no clip is selected, when
+    // the player just walks around, or as filler between specific
+    // reactions. Mixed with bilingual entries on purpose.
+    this._idleLines = {
+      greet: [
+        '嘿，你来啦！\nI saved you the best seat. 想看哪一部？',
+        '欢迎来到家庭影院~\nPick anything from the side menu and I’ll watch with you.',
+      ],
+      pickPrompt: [
+        '想看点什么？我都陪你看。\nClassics, indie, whatever you’re in the mood for.',
+        '点一下电影屏幕就能开始啦。\nOr tell me a vibe, I’ll help you pick.',
+      ],
+      noPlayback: [
+        '我们就这样坐着也很好~\nSometimes silence is its own movie.',
+      ],
+      paused: [
+        '暂停一下也好，\nlet the moment breathe. 喝口水？',
+        '想聊聊刚才那段吗？\nI’ll wait — take your time.',
+      ],
+      resume: [
+        '好，继续~ \nLet’s see where this goes.',
+      ],
+      followAlong: [
+        '我就坐在你旁边喔。\nRight here with you.',
+        '电影最棒的不只是画面，\n是身边有人一起看。',
+      ],
+    };
+
     this.build();
   }
 
   build() {
-    this._buildRoom(18, 16, 6, 0x1a1a1a, 0x12121a);
-    this._buildAICompanion(-3, 0.5, 1, 0xC0A0D8);
+    // Bespoke cinema shell — burgundy walls + walnut floor + coffered
+    // ceiling + emissive cove + center aisle strip. Replaces the cold
+    // BaseVRRoom default so the room feels like a private screening room
+    // before any prop is even loaded.
+    this._buildTheaterShell(18, 16, 6);
+    // Spawn 灵灵 floating near the right-side wall art so on-entry the
+    // player sees her drift in from the side rather than popping in
+    // beside the seats. The follow logic in updateStudentPosition()
+    // will pull her toward the player smoothly.
+    this._buildAICompanion(-5.5, 1.2, 5.0, 0xC0A0D8);
     this._buildExitDoor(0, 0, 7);
-    
-    // Theater ambient lighting
-    const ambLight = new THREE.AmbientLight(0x6060a0, 0.15);
-    this.group.add(ambLight);
-    
-    const leftLight = new THREE.PointLight(0x6040a0, 0.5, 10);
-    leftLight.position.set(-8, 3, 0);
-    this.group.add(leftLight);
-    
-    const rightLight = new THREE.PointLight(0x4060a0, 0.5, 10);
-    rightLight.position.set(8, 3, 0);
-    this.group.add(rightLight);
-    
-    // Movie screen with frame
-    const frameMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.5 });
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(9, 5.5, 0.2), frameMat);
-    frame.position.set(0, 3, -7.8);
-    this.group.add(frame);
-    
-    const screenMat = new THREE.MeshStandardMaterial({ 
-      color: 0x2a2a3a, 
-      emissive: 0x4040FF, 
-      emissiveIntensity: 0.3 
+
+    // ── Cinema lighting rig (warm, layered) ───────────────────
+    // 1) HemisphereLight: warm sky / dim mahogany floor — keeps
+    //    shadows lifted without flattening them.
+    // 2) Faint AmbientLight so very dark seat undersides don't
+    //    crush to pure black on lower-end devices.
+    // 3) Four warm wall-sconce PointLights paired with the sconce
+    //    GLBs along the side walls — these are what give the room
+    //    its cozy "movie palace" glow.
+    this.group.add(new THREE.HemisphereLight(0xffd2a0, 0x3a1f12, 0.34));
+    this.group.add(new THREE.AmbientLight(0xffe6c8, 0.18));
+
+    const sconceLights = [
+      [-8.55, 2.55, -3.5], [-8.55, 2.55, 3.5],
+      [ 8.55, 2.55, -3.5], [ 8.55, 2.55, 3.5],
+    ];
+    for (const [x, y, z] of sconceLights) {
+      const l = new THREE.PointLight(0xffb066, 0.55, 7.5, 1.6);
+      l.position.set(x, y, z);
+      this.group.add(l);
+    }
+
+    // ── Home theater rig (screen, bezel, speakers, controls) ──
+    this._buildHomeTheater();
+
+    // ── Seating (front-row chairs + back-row recliners) ──────
+    // Project orientation convention (mirrors ChatVRRoom):
+    //   rotationY = 0       → model front faces -Z (toward back wall)
+    //   rotationY = Math.PI → model front faces +Z (toward entrance)
+    // The screen sits on the back wall at z = -7.85, so chairs and
+    // recliners use rotationY = 0 to put cushions and the sitter's
+    // gaze straight at the screen.
+    const frontZ = 2.0;
+    const seatXs = [-3.2, -1.6, 0, 1.6, 3.2];
+    for (const sx of seatXs) {
+      mountTripoModel(this.group, 'cinema_seat_red', {
+        position: [sx, 0, frontZ],
+        rotationY: 0,
+        targetSize: 0.95,
+        yAlign: 'bottom',
+      });
+    }
+    const backZ = 4.6;
+    mountTripoModel(this.group, 'recliner_loveseat', {
+      position: [-2.0, 0, backZ], rotationY: 0,
+      targetSize: 1.7, yAlign: 'bottom',
     });
-    const screen = new THREE.Mesh(new THREE.PlaneGeometry(8.5, 5), screenMat);
-    screen.position.set(0, 3, -7.7);
-    this.group.add(screen);
-    
-    // Screen glow
-    const screenLight = new THREE.PointLight(0x6666FF, 0.6, 10);
-    screenLight.position.set(0, 3, -5);
-    this.group.add(screenLight);
-    
-    // Cinema seats (cached → 1 fetch for all 10 seats).
-    for (let row = 0; row < 2; row++) {
-      for (let col = -2; col <= 2; col++) {
-        mountTripoModel(this.group, 'cinema_seat_red', {
-          position: [col * 1.5, 0, 3 + row * 2],
-          rotationY: Math.PI,
-          targetSize: 0.95,
-          yAlign: 'bottom',
-        });
+    mountTripoModel(this.group, 'recliner_loveseat', {
+      position: [ 2.0, 0, backZ], rotationY: 0,
+      targetSize: 1.7, yAlign: 'bottom',
+    });
+
+    // ── Snack zone (front-right, stays clear of the seats) ────
+    // Front-right seat is at x=3.2, so the side table at x=6.0
+    // leaves a comfortable 1.8m walking aisle around it. The
+    // popcorn bucket sits on top of the table (~0.6m up).
+    mountTripoModel(this.group, 'side_table_bistro',
+      { position: [6.0, 0, 1.0], targetSize: 0.7, yAlign: 'bottom' });
+    mountTripoModel(this.group, 'popcorn_bucket',
+      { position: [6.0, 0.6, 1.0], targetSize: 0.35, yAlign: 'bottom' });
+
+    // Popcorn cart against the right wall behind the recliners.
+    // Right wall interior at x = +9; the cart's depth axis runs
+    // along X after rotationY=+π/2, so its back rests near the
+    // wall while the glass display faces the room (front = -X).
+    mountTripoModel(this.group, 'popcorn_machine',
+      { position: [8.0, 0, 5.0], rotationY: Math.PI / 2,
+        targetSize: 1.4, yAlign: 'bottom' });
+
+    // ── Wall art ─────────────────────────────────────────────
+    // Mounted flush on the side walls (interior x=±9). Posters use
+    // rotationY = ∓π/2 so the printed face points into the room
+    // (left wall → +X, right wall → -X). Centre is offset from the
+    // wall by 8cm so the GLB's small depth never punches through.
+    mountTripoModel(this.group, 'movie_poster_classic', {
+      position: [-8.92, 2.0, 0], rotationY: -Math.PI / 2,
+      targetSize: 1.6, yAlign: 'center',
+    });
+    mountTripoModel(this.group, 'movie_poster_modern', {
+      position: [ 8.92, 2.0, 0], rotationY:  Math.PI / 2,
+      targetSize: 1.6, yAlign: 'center',
+    });
+
+    // ── Wall sconces (4): a pair flanking each poster ────────
+    // Same +X / -X room-facing logic as the posters. Smaller
+    // targetSize (0.5) so the mounting plate hugs the wall.
+    const sconceSpec = [
+      { p: [-8.92, 2.6, -3.0], r: -Math.PI / 2 },
+      { p: [-8.92, 2.6,  3.0], r: -Math.PI / 2 },
+      { p: [ 8.92, 2.6, -3.0], r:  Math.PI / 2 },
+      { p: [ 8.92, 2.6,  3.0], r:  Math.PI / 2 },
+    ];
+    for (const s of sconceSpec) {
+      mountTripoModel(this.group, 'wall_sconce_theater', {
+        position: s.p, rotationY: s.r,
+        targetSize: 0.5, yAlign: 'center',
+      });
+    }
+
+    // ── Proscenium curtains — flanking the screen ────────────
+    // Hung on the back wall (z = -7.4, just in front of the
+    // wall plane at -8) and rotated to face the audience (front
+    // = +Z, so rotationY = π). Inset just outside the screen
+    // bezel (frame half-width 5.15) so they frame but never
+    // cover the picture.
+    const wallZ = -7.85;
+    mountTripoModel(this.group, 'theater_curtain_red', {
+      position: [-5.6, 0, wallZ + 0.45], rotationY: Math.PI,
+      fitHeight: 4.5, yAlign: 'bottom',
+    });
+    mountTripoModel(this.group, 'theater_curtain_red', {
+      position: [ 5.6, 0, wallZ + 0.45], rotationY: Math.PI,
+      fitHeight: 4.5, yAlign: 'bottom',
+    });
+
+    this.onReady();
+  }
+
+  // ── Cinema shell ────────────────────────────────────────────
+  // Walls: burgundy upper + walnut wainscot + gold chair-rail.
+  // Floor: dark walnut with a center carpet runner + emissive aisle.
+  // Ceiling: dark plum with a coffered grid + warm cove glow at edges.
+  _buildTheaterShell(width, depth, height) {
+    this.roomSize = { width, depth, height };
+
+    // ── Floor — dark walnut planks (CanvasTexture) ──────────
+    const floorTex = this._makeTheaterFloorTexture();
+    floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+    floorTex.repeat.set(3, 3);
+    floorTex.colorSpace = THREE.SRGBColorSpace;
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, depth),
+      new THREE.MeshStandardMaterial({
+        map: floorTex, roughness: 0.85, metalness: 0.04,
+      }),
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    this.group.add(floor);
+
+    // Plush red carpet runner down the center aisle.
+    const carpetMat = new THREE.MeshStandardMaterial({
+      color: 0x4d141b, roughness: 0.95, metalness: 0,
+    });
+    const carpet = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.4, depth - 1.0), carpetMat,
+    );
+    carpet.rotation.x = -Math.PI / 2;
+    carpet.position.y = 0.005;
+    this.group.add(carpet);
+
+    // Two warm aisle-light strips on either side of the carpet.
+    const aisleMat = new THREE.MeshBasicMaterial({
+      color: 0xffb066, transparent: true, opacity: 0.85,
+    });
+    for (const sx of [-1.55, 1.55]) {
+      const strip = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.06, depth - 1.4), aisleMat,
+      );
+      strip.rotation.x = -Math.PI / 2;
+      strip.position.set(sx, 0.012, 0);
+      this.group.add(strip);
+    }
+
+    // ── Walls — wainscot + burgundy upper (CanvasTexture) ───
+    const wallTex = this._makeTheaterWallTexture();
+    const _wrap = (hRepeat) => {
+      const t = wallTex.clone();
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.repeat.set(hRepeat, 1);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.needsUpdate = true;
+      return t;
+    };
+    const mkWall = (planeWidth) => new THREE.Mesh(
+      new THREE.PlaneGeometry(planeWidth, height),
+      new THREE.MeshStandardMaterial({
+        map: _wrap(planeWidth / 4),
+        roughness: 0.9, metalness: 0.06,
+        side: THREE.DoubleSide,
+      }),
+    );
+
+    const back = mkWall(width);
+    back.position.set(0, height / 2, -depth / 2);
+    this.group.add(back);
+
+    const front = mkWall(width);
+    front.rotation.y = Math.PI;
+    front.position.set(0, height / 2, depth / 2);
+    this.group.add(front);
+
+    const left = mkWall(depth);
+    left.rotation.y = Math.PI / 2;
+    left.position.set(-width / 2, height / 2, 0);
+    this.group.add(left);
+
+    const right = mkWall(depth);
+    right.rotation.y = -Math.PI / 2;
+    right.position.set(width / 2, height / 2, 0);
+    this.group.add(right);
+
+    // ── Ceiling — coffered tile pattern (CanvasTexture) ─────
+    const ceilTex = this._makeTheaterCeilingTexture();
+    ceilTex.wrapS = ceilTex.wrapT = THREE.RepeatWrapping;
+    ceilTex.repeat.set(3, 3);
+    ceilTex.colorSpace = THREE.SRGBColorSpace;
+    const ceiling = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, depth),
+      new THREE.MeshStandardMaterial({
+        map: ceilTex, roughness: 0.92, metalness: 0.06,
+      }),
+    );
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.y = height;
+    this.group.add(ceiling);
+
+    // Cove glow strip — emissive frame inset just below the ceiling
+    // to fake the warm hidden-LED uplight you find in real cinemas.
+    const coveMat = new THREE.MeshBasicMaterial({
+      color: 0xffb066, transparent: true, opacity: 0.55,
+    });
+    const coveSpec = [
+      [width - 0.6, 0.06, 0,                height - 0.10,  0,            -depth / 2 + 0.06],
+      [width - 0.6, 0.06, 0,                height - 0.10,  0,             depth / 2 - 0.06],
+      [0.06, 0.06,        depth - 0.6,      height - 0.10, -width / 2 + 0.06, 0],
+      [0.06, 0.06,        depth - 0.6,      height - 0.10,  width / 2 - 0.06, 0],
+    ];
+    for (const [w, h, d, py, px, pz] of coveSpec) {
+      const cove = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), coveMat);
+      cove.position.set(px, py, pz);
+      this.group.add(cove);
+    }
+  }
+
+  // ── Wall CanvasTexture: burgundy upper / walnut wainscot ──
+  _makeTheaterWallTexture() {
+    const W = 1024, H = 1280;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Top crown moulding strip (warm walnut hint).
+    ctx.fillStyle = '#3a2418';
+    ctx.fillRect(0, 0, W, H * 0.025);
+
+    // Upper burgundy field with subtle vertical drape gradient.
+    const upper = ctx.createLinearGradient(0, H * 0.025, 0, H * 0.62);
+    upper.addColorStop(0, '#5a1f25');
+    upper.addColorStop(1, '#3a1218');
+    ctx.fillStyle = upper;
+    ctx.fillRect(0, H * 0.025, W, H * 0.595);
+
+    // Faint vertical fabric texture so the burgundy isn't dead.
+    ctx.strokeStyle = 'rgba(255, 200, 150, 0.05)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < W; x += 4) {
+      ctx.beginPath();
+      ctx.moveTo(x, H * 0.025);
+      ctx.lineTo(x, H * 0.62);
+      ctx.stroke();
+    }
+
+    // Damask diamond accents — luxe but quiet.
+    ctx.strokeStyle = 'rgba(255, 200, 140, 0.08)';
+    ctx.lineWidth = 1.5;
+    const dW = 168, dH = 84;
+    for (let y = H * 0.05; y < H * 0.58; y += dH) {
+      for (let x = -dW / 2; x < W + dW; x += dW) {
+        const off = ((y / dH) | 0) % 2 === 0 ? 0 : dW / 2;
+        ctx.beginPath();
+        ctx.moveTo(x + off,            y + dH / 2);
+        ctx.lineTo(x + off + dW / 2,   y);
+        ctx.lineTo(x + off + dW,       y + dH / 2);
+        ctx.lineTo(x + off + dW / 2,   y + dH);
+        ctx.closePath();
+        ctx.stroke();
       }
     }
 
-    // Side table for the popcorn bucket.
-    mountTripoModel(this.group, 'side_table_bistro',
-      { position: [7, 0, 2], targetSize: 0.9, yAlign: 'bottom' });
+    // ── Chair rail: gold beadwork + dark shadow band ────────
+    ctx.fillStyle = '#1c0a08';
+    ctx.fillRect(0, H * 0.62, W, H * 0.012);
+    ctx.fillStyle = '#c0974a';
+    ctx.fillRect(0, H * 0.632, W, H * 0.014);
+    ctx.fillStyle = '#3a2010';
+    ctx.fillRect(0, H * 0.646, W, H * 0.014);
 
-    // Popcorn bucket on top of the side table (~0.85m high).
-    mountTripoModel(this.group, 'popcorn_bucket',
-      { position: [7, 0.85, 2], targetSize: 0.45, yAlign: 'bottom' });
-    
-    // Video panel on the big screen
-    this.videoPanel = new VRVideoPanel(this.group, {
-      position: new THREE.Vector3(0, 3, -7.5),
-      width: 8,
-      height: 4.5,
-      onInteract: (action, data) => {
-        if (this.companion && action === 'play' && data.playing) {
-          this.companion.setExpression('happy');
-        }
+    // ── Wainscot — walnut panels with vertical seams ─────────
+    const wainscot = ctx.createLinearGradient(0, H * 0.66, 0, H * 0.97);
+    wainscot.addColorStop(0, '#3a2719');
+    wainscot.addColorStop(1, '#1f1108');
+    ctx.fillStyle = wainscot;
+    ctx.fillRect(0, H * 0.66, W, H * 0.31);
+
+    // Inset rectangular panel mouldings — 4 panels per tile.
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.lineWidth = 2;
+    const panelMargin = 24;
+    for (let i = 0; i < 4; i++) {
+      const px = i * (W / 4) + panelMargin;
+      const pw = W / 4 - panelMargin * 2;
+      ctx.strokeRect(px, H * 0.685, pw, H * 0.27);
+    }
+    // Highlight stroke inside each panel for relief.
+    ctx.strokeStyle = 'rgba(255, 200, 150, 0.07)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 4; i++) {
+      const px = i * (W / 4) + panelMargin + 4;
+      const pw = W / 4 - panelMargin * 2 - 8;
+      ctx.strokeRect(px, H * 0.685 + 4, pw, H * 0.27 - 8);
+    }
+
+    // Walnut grain whispers.
+    ctx.strokeStyle = 'rgba(255, 200, 130, 0.045)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 80; i++) {
+      const y = H * 0.66 + Math.random() * H * 0.31;
+      const x = Math.random() * W;
+      const len = 60 + Math.random() * 200;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + len, y + (Math.random() - 0.5) * 4);
+      ctx.stroke();
+    }
+
+    // Skirting board.
+    ctx.fillStyle = '#0a0604';
+    ctx.fillRect(0, H * 0.97, W, H * 0.03);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Floor CanvasTexture: dark walnut planks ─────────────
+  _makeTheaterFloorTexture() {
+    const W = 512, H = 512;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    const grad = ctx.createLinearGradient(0, 0, W, H);
+    grad.addColorStop(0, '#2c1d12');
+    grad.addColorStop(1, '#180c06');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.lineWidth = 1.5;
+    for (let x = 0; x < W; x += 64) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let y = 0; y < H; y += 256) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    ctx.strokeStyle = 'rgba(180, 130, 80, 0.07)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 100; i++) {
+      const x = Math.random() * W, y = Math.random() * H;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + 30 + Math.random() * 50, y);
+      ctx.stroke();
+    }
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Ceiling CanvasTexture: coffered tiles ───────────────
+  _makeTheaterCeilingTexture() {
+    const W = 512, H = 512;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Deep plum base.
+    ctx.fillStyle = '#1a0e1c';
+    ctx.fillRect(0, 0, W, H);
+
+    // Coffered grid — each tile has a slightly lighter inset and a
+    // central rosette dot, then dark seam lines around it.
+    const rows = 4, cols = 4;
+    const cw = W / cols, ch = H / rows;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = c * cw, y = r * ch;
+        // Inset panel
+        const inset = ctx.createRadialGradient(
+          x + cw / 2, y + ch / 2, 4,
+          x + cw / 2, y + ch / 2, cw * 0.55,
+        );
+        inset.addColorStop(0, '#37223e');
+        inset.addColorStop(1, '#1a0e1c');
+        ctx.fillStyle = inset;
+        ctx.fillRect(x + 6, y + 6, cw - 12, ch - 12);
+
+        // Central rosette
+        ctx.fillStyle = 'rgba(255, 195, 130, 0.18)';
+        ctx.beginPath();
+        ctx.arc(x + cw / 2, y + ch / 2, 6, 0, Math.PI * 2);
+        ctx.fill();
       }
+    }
+
+    // Dark seams.
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.lineWidth = 4;
+    for (let i = 0; i <= cols; i++) {
+      ctx.beginPath();
+      ctx.moveTo(i * cw, 0);
+      ctx.lineTo(i * cw, H);
+      ctx.stroke();
+    }
+    for (let i = 0; i <= rows; i++) {
+      ctx.beginPath();
+      ctx.moveTo(0, i * ch);
+      ctx.lineTo(W, i * ch);
+      ctx.stroke();
+    }
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Build the wall-mounted screen, frame, bias-light and speakers.
+  _buildHomeTheater() {
+    // Geometry constants — keeps the wall composition consistent.
+    const wallZ = -7.85;          // outer face of back wall
+    const screenW = 9.6, screenH = 5.4;     // 16:9-ish (16:9 = 9.6:5.4)
+    const frameW  = screenW + 0.7, frameH = screenH + 0.7;
+    const screenY = 3.1;
+
+    // Bias light — a soft glow PLANE behind the bezel painted on
+    // the back wall. Switched from cold blue to warm amber so it
+    // harmonises with the new burgundy walls and sconces rather
+    // than fighting them.
+    const biasMat = new THREE.MeshBasicMaterial({
+      color: 0xffa566, transparent: true, opacity: 0.35,
     });
-    this.interactables.push(...this.videoPanel.getInteractables());
-    
-    this.onReady();
+    const bias = new THREE.Mesh(
+      new THREE.PlaneGeometry(frameW + 1.6, frameH + 1.6),
+      biasMat,
+    );
+    bias.position.set(0, screenY, wallZ + 0.005);
+    this.group.add(bias);
+
+    // Bezel — thin matte-black frame around the screen.
+    const frameMat = new THREE.MeshStandardMaterial({
+      color: 0x0d0d11, roughness: 0.55, metalness: 0.15,
+    });
+    const frame = new THREE.Mesh(
+      new THREE.BoxGeometry(frameW, frameH, 0.18), frameMat,
+    );
+    frame.position.set(0, screenY, wallZ + 0.06);
+    this.group.add(frame);
+
+    // The screen itself — starts with an idle CanvasTexture slate.
+    // Once the user picks a clip (or clicks the screen), we swap the
+    // material's map/emissiveMap to a THREE.VideoTexture sampled from
+    // HomeTheater's shared <video crossorigin="anonymous"> element.
+    // Because VideoTexture works regardless of whether the <video>
+    // node is on-screen, this is the path that lets video play on the
+    // 3D cinema screen *in immersive VR* (where DOM iframes are gone).
+    const idleTex = this._makeHomeTheaterIdleTexture();
+    const screenMat = new THREE.MeshStandardMaterial({
+      map: idleTex,
+      emissive: 0xffffff,
+      emissiveMap: idleTex,
+      emissiveIntensity: 0.85,
+      roughness: 0.95, metalness: 0,
+    });
+    const screen = new THREE.Mesh(
+      new THREE.PlaneGeometry(screenW, screenH), screenMat,
+    );
+    screen.position.set(0, screenY, wallZ + 0.16);
+    screen.userData.onClick = () => {
+      // First click: load + play the first clip (also fires ht:load
+      // so the texture swap below kicks in). Subsequent clicks toggle
+      // play/pause directly. Works in desktop AND VR — no overlay
+      // needed for basic playback.
+      const HT = window.HomeTheater;
+      if (!HT) return;
+      if (!HT.isReady?.()) HT.playIndex(0);
+      else                 HT.togglePlay();
+      if (this.companion) this.companion.setExpression('happy');
+    };
+    this.group.add(screen);
+    this.interactables.push(screen);
+    this._theaterScreen = screen;
+    this._theaterIdleTex = idleTex;
+
+    // Build (lazily) and bind the VideoTexture once HomeTheater loads
+    // its first source. We only need ONE VideoTexture for the lifetime
+    // of the room — re-binding `video.src` keeps reusing the same
+    // texture since the underlying HTMLVideoElement is shared.
+    this._onHTLoad = () => {
+      const HT = window.HomeTheater;
+      if (!HT?.video) return;
+      if (!this._videoTexture) {
+        const tex = new THREE.VideoTexture(HT.video);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.minFilter  = THREE.LinearFilter;
+        tex.magFilter  = THREE.LinearFilter;
+        this._videoTexture = tex;
+      }
+      screenMat.map          = this._videoTexture;
+      screenMat.emissiveMap  = this._videoTexture;
+      screenMat.emissiveIntensity = 1.15;
+      screenMat.needsUpdate  = true;
+    };
+    window.addEventListener('ht:load', this._onHTLoad);
+    // If the player previously loaded a clip in another visit, the
+    // shared <video> element already has a valid src — bind right
+    // now so the screen doesn't sit on the idle slate while waiting
+    // for the next ht:load event.
+    if (window.HomeTheater?.isReady?.()) this._onHTLoad();
+
+    // Glow accent in front of the screen — kept faintly cool so it
+    // still reads as "powered on" video light, but lowered to 0.35
+    // so it never overrides the warm sconce ambience.
+    const screenLight = new THREE.PointLight(0x9aa6ff, 0.35, 12, 1.6);
+    screenLight.position.set(0, screenY, wallZ + 3.5);
+    this.group.add(screenLight);
+
+    // ── Speakers ──────────────────────────────────────────────
+    const speakerMat = new THREE.MeshStandardMaterial({
+      color: 0x111114, roughness: 0.7, metalness: 0.18,
+    });
+    const grilleMat = new THREE.MeshStandardMaterial({
+      color: 0x1d1d23, roughness: 0.95, metalness: 0,
+    });
+    const buildTower = (x) => {
+      const tower = new THREE.Mesh(
+        new THREE.BoxGeometry(0.55, 2.4, 0.45), speakerMat,
+      );
+      tower.position.set(x, 1.2, wallZ + 0.4);
+      this.group.add(tower);
+
+      // Three driver "cones" — concentric matte rings.
+      const cones = [
+        { y: 1.95, r: 0.10 },
+        { y: 1.55, r: 0.15 },
+        { y: 0.95, r: 0.20 },
+      ];
+      for (const c of cones) {
+        const cone = new THREE.Mesh(
+          new THREE.CircleGeometry(c.r, 24), grilleMat,
+        );
+        cone.position.set(x, c.y, wallZ + 0.63);
+        this.group.add(cone);
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(c.r * 0.55, c.r * 0.7, 24),
+          new THREE.MeshStandardMaterial({
+            color: 0x2a2a33, roughness: 0.9, metalness: 0,
+          }),
+        );
+        ring.position.set(x, c.y, wallZ + 0.64);
+        this.group.add(ring);
+      }
+    };
+    // Pushed out far enough (1.7m beyond the bezel edge) that they
+    // sit clear of the proscenium curtains at x = ±5.6, leaving a
+    // visible ~0.4m gap on each side of the screen.
+    buildTower(-(frameW / 2 + 1.7));
+    buildTower( (frameW / 2 + 1.7));
+
+    // Subwoofer — squat box centred under the screen.
+    const sub = new THREE.Mesh(
+      new THREE.BoxGeometry(1.3, 0.8, 0.6), speakerMat,
+    );
+    sub.position.set(0, 0.4, wallZ + 0.5);
+    this.group.add(sub);
+    const subCone = new THREE.Mesh(
+      new THREE.CircleGeometry(0.28, 28), grilleMat,
+    );
+    subCone.position.set(0, 0.4, wallZ + 0.81);
+    this.group.add(subCone);
+
+    // ── Floating control bar (3D, clickable in both modes) ────
+    // Sits between the screen and the seats so VR users can switch
+    // clips / pause without needing DOM overlays. Built as a row of
+    // four CanvasTexture-labelled pill meshes facing the audience.
+    this._buildHomeTheaterControls(wallZ);
+
+    // Stash refs for the bias-light breathing animation.
+    this._theaterBias = biasMat;
+  }
+
+  // Four-button remote bar floating between front-row seats and the
+  // screen. Positions: y ≈ chest height for a standing user, z just
+  // forward of the screen so it's reachable via VR controller raycast.
+  _buildHomeTheaterControls(wallZ) {
+    const buttons = [
+      { label: 'PREV',  sub: '上一段', action: () => window.HomeTheater?.prev() },
+      { label: 'PLAY',  sub: '播放/暂停', action: () => window.HomeTheater?.togglePlay() },
+      { label: 'NEXT',  sub: '下一段', action: () => window.HomeTheater?.next() },
+      { label: 'BROWSE', sub: '面板',  action: () => window.HomeTheater?.open() },
+    ];
+
+    const padW = 0.95, padH = 0.42, padD = 0.10;
+    const gap  = 0.12;
+    const barZ = wallZ + 4.2;        // 4.2m in front of the back wall
+    const barY = 1.45;
+    const totalW = buttons.length * padW + (buttons.length - 1) * gap;
+    let x = -totalW / 2 + padW / 2;
+
+    const baseMat = new THREE.MeshStandardMaterial({
+      color: 0x1c1a28, roughness: 0.55, metalness: 0.2,
+    });
+
+    for (const def of buttons) {
+      // Front-face label texture
+      const tex = this._makeRemoteButtonTexture(def.label, def.sub);
+      const faceMat = new THREE.MeshStandardMaterial({
+        map: tex, emissive: 0xffffff, emissiveMap: tex,
+        emissiveIntensity: 0.6, roughness: 0.6, metalness: 0.1,
+      });
+
+      // Box: front face uses the label material, the rest matte black.
+      // BoxGeometry's material order is [+x, -x, +y, -y, +z, -z].
+      const pad = new THREE.Mesh(
+        new THREE.BoxGeometry(padW, padH, padD),
+        [baseMat, baseMat, baseMat, baseMat, faceMat, baseMat],
+      );
+      pad.position.set(x, barY, barZ);
+      pad.userData.onClick = () => {
+        def.action?.();
+        // Tiny press animation: nudge the pad backward briefly.
+        pad.position.z = barZ - 0.04;
+        setTimeout(() => { pad.position.z = barZ; }, 120);
+      };
+      this.group.add(pad);
+      this.interactables.push(pad);
+
+      x += padW + gap;
+    }
+  }
+
+  // Build a soft-glow pill button face with primary + sub-label.
+  _makeRemoteButtonTexture(primary, secondary) {
+    const W = 256, H = 128;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Backdrop with subtle vertical gradient.
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#2a2440');
+    grad.addColorStop(1, '#171328');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Inner border for tactile look.
+    ctx.strokeStyle = 'rgba(150, 145, 220, 0.45)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(6, 6, W - 12, H - 12);
+
+    ctx.fillStyle = '#f1ecff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 38px "Segoe UI",Arial,sans-serif';
+    ctx.fillText(primary, W / 2, H / 2 - 10);
+
+    ctx.fillStyle = 'rgba(195, 188, 230, 0.78)';
+    ctx.font = '500 22px "Segoe UI","PingFang SC",Arial,sans-serif';
+    ctx.fillText(secondary, W / 2, H / 2 + 28);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // Idle slate drawn into a CanvasTexture so the screen looks like a
+  // proper "Apple TV / smart-TV" launcher even before the iframe
+  // overlay opens.
+  _makeHomeTheaterIdleTexture() {
+    const W = 1024, H = 576;        // 16:9
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Gradient backdrop — deep navy → indigo so the screen feels alive.
+    const g = ctx.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, '#0e0a22');
+    g.addColorStop(1, '#241546');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // Soft purple aurora glow centre.
+    const r = ctx.createRadialGradient(W / 2, H / 2, 30, W / 2, H / 2, W * 0.55);
+    r.addColorStop(0, 'rgba(140,120,255,0.50)');
+    r.addColorStop(1, 'rgba(140,120,255,0.0)');
+    ctx.fillStyle = r;
+    ctx.fillRect(0, 0, W, H);
+
+    // Headline.
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.font = '700 96px "Segoe UI","PingFang SC",Arial,sans-serif';
+    ctx.fillText('HOME THEATER', W / 2, H / 2 - 30);
+    ctx.font = '500 56px "Segoe UI","PingFang SC",Arial,sans-serif';
+    ctx.fillStyle = 'rgba(220, 215, 255, 0.85)';
+    ctx.fillText('家庭影院', W / 2, H / 2 + 38);
+
+    // Logo pill row: Bilibili + YouTube placeholders.
+    const pillY = H * 0.78, pillH = 70, pillR = pillH / 2;
+    const drawPill = (x, label, fillStart, fillEnd) => {
+      const wPill = 280;
+      const grad = ctx.createLinearGradient(x - wPill / 2, 0, x + wPill / 2, 0);
+      grad.addColorStop(0, fillStart); grad.addColorStop(1, fillEnd);
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(x - wPill / 2 + pillR, pillY);
+      ctx.arc(x - wPill / 2 + pillR, pillY + pillH / 2, pillR, -Math.PI / 2, Math.PI / 2, true);
+      ctx.lineTo(x + wPill / 2 - pillR, pillY + pillH);
+      ctx.arc(x + wPill / 2 - pillR, pillY + pillH / 2, pillR,  Math.PI / 2, -Math.PI / 2, true);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = '700 30px "Segoe UI",Arial,sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, x, pillY + pillH / 2 + 2);
+      ctx.textBaseline = 'alphabetic';
+    };
+    drawPill(W / 2 - 170, 'Bilibili', '#FF7BB5', '#FB9C3C');
+    drawPill(W / 2 + 170, 'YouTube', '#FF4040', '#C50000');
+
+    // Footer hint.
+    ctx.fillStyle = 'rgba(220, 215, 255, 0.6)';
+    ctx.font = '400 26px "Segoe UI","PingFang SC",Arial,sans-serif';
+    ctx.fillText('Click the screen or PLAY to start · 点击屏幕或 PLAY 开始播放', W / 2, H - 32);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
   }
 
   update(delta) {
     super.update(delta);
-    if (this.videoPanel) this.videoPanel.update(delta);
+    // Gentle bias-light breathing so the wall halo feels alive.
+    if (this._theaterBias) {
+      const t = performance.now() * 0.001;
+      this._theaterBias.opacity = 0.30 + Math.sin(t * 0.8) * 0.07;
+    }
+  }
+
+  // ── Lifecycle ────────────────────────────────────────────
+  enter() {
+    super.enter();
+
+    // Greet the player after a beat so the companion has time to
+    // float over to the seats. The first idle chatter is scheduled
+    // from inside _say('greet') to avoid double-speaking on entry.
+    if (this._greetTimer) clearTimeout(this._greetTimer);
+    this._greetTimer = setTimeout(() => {
+      if (!this.isActive) return;
+      this._say('greet');
+      // Kick off the recurring idle chatter loop.
+      this._scheduleIdleChatter(8000 + Math.random() * 6000);
+    }, 1800);
+
+    // Subscribe to the home-theater player events so 灵灵 reacts in
+    // real time when the player picks a clip / hits play / pause.
+    this._onHTPlay  = () => this._onPlaybackStart();
+    this._onHTPause = () => this._onPlaybackPause();
+    this._onHTLoad2 = (e) => this._onClipLoaded(e);
+    window.addEventListener('ht:play',  this._onHTPlay);
+    window.addEventListener('ht:pause', this._onHTPause);
+    window.addEventListener('ht:load',  this._onHTLoad2);
+
+    // If the player previously left mid-movie and walked back in,
+    // greet them with a "welcome back" specific to the current clip
+    // instead of the generic intro.
+    const HT = window.HomeTheater;
+    if (HT?.isReady?.()) {
+      this._lastClipIndex = HT.currentIndex;
+      setTimeout(() => {
+        if (!this.isActive) return;
+        this._say('mid', HT.currentIndex);
+      }, 4500);
+    }
+  }
+
+  // Pause playback + close the overlay when the player walks back
+  // to the hub, so audio doesn't follow them around the building.
+  exit() {
+    super.exit();
+    const HT = window.HomeTheater;
+    if (HT) {
+      HT.close?.();
+      HT.video?.pause?.();
+    }
+    // VideoTexture rebind listener
+    if (this._onHTLoad) {
+      window.removeEventListener('ht:load', this._onHTLoad);
+      this._onHTLoad = null;
+    }
+    // Companion behaviour listeners
+    if (this._onHTPlay)  window.removeEventListener('ht:play',  this._onHTPlay);
+    if (this._onHTPause) window.removeEventListener('ht:pause', this._onHTPause);
+    if (this._onHTLoad2) window.removeEventListener('ht:load',  this._onHTLoad2);
+    this._onHTPlay = this._onHTPause = this._onHTLoad2 = null;
+
+    // Stop chatter timers + reset companion state
+    if (this._idleTimer)  { clearTimeout(this._idleTimer);  this._idleTimer  = null; }
+    if (this._greetTimer) { clearTimeout(this._greetTimer); this._greetTimer = null; }
+    this.companion?.hideBubble();
+    this.companion?.setMode('idle');
+    this.companion?.setExpression('idle');
+    this.companion?.setFollowTarget(null);
+  }
+
+  // ── Per-frame: pull 灵灵 to a comfortable seat-mate offset ──
+  // Same shape as ChatVRRoom.updateStudentPosition: convert player
+  // world pos → room-local, look at them, and set a follow target a
+  // small, clamped distance to the side. The y component drops below
+  // standing eye level so 灵灵 reads as "sitting" beside the player.
+  updateStudentPosition(worldPos) {
+    if (!this.companion) return;
+    const local = this._studentLocal.copy(worldPos).sub(this.roomPosition);
+    this._hasStudent = true;
+
+    this.companion.lookAtStudent(local.clone());
+
+    const tgt = local.clone().add(this._followOffset);
+    const half  = (this.roomSize?.width || 18) / 2 - 1.0;
+    const halfD = (this.roomSize?.depth || 16) / 2 - 1.0;
+    tgt.x = Math.max(-half,  Math.min(half,  tgt.x));
+    tgt.z = Math.max(-halfD, Math.min(halfD, tgt.z));
+    // Clamp Y so 灵灵 never sinks into the floor when the player
+    // crouches and never floats into the chandelier when they stand.
+    tgt.y = Math.max(0.6, Math.min(1.6, tgt.y));
+    this.companion.setFollowTarget(tgt);
+  }
+
+  // ── Companion speech helpers ────────────────────────────
+  /**
+   * Speak a randomly-picked line from the matching pool. Categories:
+   *   'greet'         — first hello on enter
+   *   'pickPrompt'    — nudge user to choose a movie
+   *   'noPlayback'    — chatter when nothing is playing
+   *   'paused' / 'resume'
+   *   'followAlong'   — "I'm right here" filler during long clips
+   *   'intro' / 'mid' / 'closing' — clip-specific (need clipIndex)
+   */
+  _say(category, clipIndex) {
+    if (!this.companion?.say) return;
+    let pool;
+    if (category === 'intro' || category === 'mid' || category === 'closing') {
+      const idx = (typeof clipIndex === 'number')
+        ? clipIndex : window.HomeTheater?.currentIndex;
+      const clip = this._clipLines?.[idx];
+      pool = clip?.[category];
+    } else {
+      pool = this._idleLines?.[category];
+    }
+    if (!pool || pool.length === 0) return;
+    const text = pool[(Math.random() * pool.length) | 0];
+    this.companion.say(text);
+    this._lastSaidAt = performance.now();
+  }
+
+  // Recursive setTimeout loop — schedules itself again every time it
+  // fires so we get a natural irregular cadence without setInterval
+  // running while the room is hidden.
+  _scheduleIdleChatter(initialDelayMs) {
+    if (this._idleTimer) clearTimeout(this._idleTimer);
+    const delay = initialDelayMs ?? (14000 + Math.random() * 9000);
+    this._idleTimer = setTimeout(() => {
+      this._idleTimer = null;
+      if (!this.isActive) return;
+      this._fireIdleChatter();
+      // Schedule the next one — slower while a clip is playing so we
+      // don't spam the reading user with bubbles.
+      const HT = window.HomeTheater;
+      const playing = HT?.video && !HT.video.paused && !HT.video.ended;
+      const nextDelay = playing
+        ? 18000 + Math.random() * 12000
+        : 11000 + Math.random() * 8000;
+      this._scheduleIdleChatter(nextDelay);
+    }, Math.max(1500, delay));
+  }
+
+  _fireIdleChatter() {
+    const HT = window.HomeTheater;
+    const ready   = HT?.isReady?.();
+    const playing = ready && HT.video && !HT.video.paused && !HT.video.ended;
+
+    if (playing && typeof HT.currentIndex === 'number') {
+      // 50/50 between a clip-specific mid line and a generic
+      // "I'm here with you" follow-along filler.
+      if (Math.random() < 0.6) this._say('mid', HT.currentIndex);
+      else                     this._say('followAlong');
+    } else if (ready && HT.video?.paused) {
+      this._say('paused');
+    } else {
+      // Nothing has been picked yet — gently encourage the player to
+      // pick a clip from the side menu (or click the screen).
+      if (Math.random() < 0.65) this._say('pickPrompt');
+      else                      this._say('noPlayback');
+    }
+  }
+
+  // ── Home Theater event handlers ─────────────────────────
+  _onClipLoaded(e) {
+    const HT = window.HomeTheater;
+    const idx = HT?.currentIndex ?? -1;
+    if (idx === this._lastClipIndex) return;     // same clip → skip
+    this._lastClipIndex = idx;
+    this.companion?.setExpression('happy');
+    // Small delay so the speech bubble doesn't appear before the
+    // playback actually starts.
+    setTimeout(() => this._say('intro', idx), 600);
+  }
+
+  _onPlaybackStart() {
+    // If we're resuming after a recent pause, say something resume-y;
+    // otherwise let the intro handler (fired by ht:load) take over.
+    const since = performance.now() - this._lastSaidAt;
+    if (since < 1500) return;       // intro just ran, don't double up
+    if (this._lastClipIndex < 0) return;  // first ever play handled by load
+    this.companion?.setExpression('happy');
+    this._say('resume');
+  }
+
+  _onPlaybackPause() {
+    // Only react if there was a real pause (not the brief pause that
+    // happens between loadSrc + autoplay during ht:load).
+    const HT = window.HomeTheater;
+    if (!HT?.video || HT.video.ended) return;
+    setTimeout(() => {
+      // Confirm it's still paused (debounce the load→autoplay pause).
+      if (HT.video?.paused && !HT.video.ended && this.isActive) {
+        this.companion?.setExpression('thinking');
+        this._say('paused');
+      }
+    }, 700);
   }
 
   getSpawnPoint() {
@@ -1421,7 +2408,7 @@ class GamesVRRoom extends VRRoom {
     this.onReady();
   }
 
-  // ── Override enter so 童童 greets the player on each visit. ──
+  // ── Override enter so 童童 greets the player on each visit. ��─
   enter() {
     super.enter();
     // Slight delay so the bubble appears after the camera has settled.
@@ -1434,7 +2421,7 @@ class GamesVRRoom extends VRRoom {
 
   // ────────────────────────────────────────────────────────────
   //  Update hook — animate confetti / banner / chess pieces.
-  // ────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────��──────
   update(delta, camWorld) {
     super.update(delta, camWorld);
     this._tickConfetti(delta);
@@ -1569,7 +2556,7 @@ class GamesVRRoom extends VRRoom {
   // ──────────────────────────────────────���─────────────────────
   //  Make the giant floor board itself a click target. The handler
   //  is always installed but only does work while a game is active.
-  // ────────────────────────────────────────────────────────────
+  // ───────────────────────���────────────────────────────────────
   _enableBoardClick() {
     const top = this._boardTopMesh;
     if (!top) return;
@@ -3548,7 +4535,7 @@ class GamesVRRoom extends VRRoom {
   //  look: deep-plum upper walls with neon argyle, walnut wainscot
   //  with an amber chair-rail, walnut floor, and a cinematic
   //  spotlight rig that pools warm light over the floor board.
-  // ════════════════════════════════════════════════════════════
+  // ══════════════════��═════════════════════════════════════════
   _buildGamesRoom(width, depth, height) {
     this.roomSize = { width, depth, height };
 
@@ -3614,7 +4601,7 @@ class GamesVRRoom extends VRRoom {
     ceiling.position.y = height;
     this.group.add(ceiling);
 
-    // ── Light rig ────────────────────────────────────────────────
+    // ── Light rig ──────────────────────────────────────────────���─
     // 1. HemisphereLight (warm sky / cool floor) for natural fill —
     //    keeps shadows from going pitch-black without flattening.
     const hemi = new THREE.HemisphereLight(0xFFD4A8, 0x1F1730, 0.50);
