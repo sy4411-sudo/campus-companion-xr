@@ -157,6 +157,3 @@ const Chat = (() => {
 
   return { init, open, close, toggle, setZone, setGender, addBubble, systemMsg, greet };
 })();
-
-// Expose globally so the ES module in main.js can reach this classic script.
-if (typeof window !== 'undefined') window.Chat = Chat;

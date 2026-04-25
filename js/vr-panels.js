@@ -303,6 +303,3 @@ const VRPanels = (() => {
     createTypingIndicator,
   };
 })();
-
-// Expose globally so the ES module in main.js can reach this classic script.
-if (typeof window !== 'undefined') window.VRPanels = VRPanels;
