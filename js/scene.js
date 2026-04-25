@@ -103,22 +103,17 @@ export class CampusScene {
   }
 
   // ── Lights ────────────────────────────────────────────────
+  // The hub now has only TWO ambient sources — a faint hemisphere fill
+  // and a tiny key — and otherwise relies on (1) the chandelier bulb at
+  // y ≈ 7.4 and (2) one coloured PointLight per portal. This makes the
+  // five gateways visually "own" their light pool and gives the lobby a
+  // dim, museum-like atmosphere.
   _initLights() {
-    this.scene.add(new THREE.AmbientLight(0xfff0d8, 0.45));
-    const center = new THREE.PointLight(0xffd070, 2.5, 45);
-    center.position.set(0, 8.5, 0); center.castShadow = true;
-    center.shadow.mapSize.set(512, 512);
-    this.scene.add(center);
-    ZONES.forEach(z => {
-      const a = z.angle * Math.PI / 180;
-      const l = new THREE.PointLight(z.color, 1.2, 18);
-      l.position.set(Math.cos(a)*13, 2.5, Math.sin(a)*13);
-      this.scene.add(l);
-    });
-    const fill = new THREE.DirectionalLight(0xffe8c8, 0.4);
+    this.scene.add(new THREE.AmbientLight(0xfff0d8, 0.16));
+    const fill = new THREE.DirectionalLight(0xffe8c8, 0.12);
     fill.position.set(8, 18, 8);
     this.scene.add(fill);
-    this.scene.fog = new THREE.FogExp2(0x1a120a, 0.018);
+    this.scene.fog = new THREE.FogExp2(0x130d07, 0.028);
   }
 
   // ── Floor ─────────────────────────────────────────────────
@@ -211,10 +206,16 @@ export class CampusScene {
     rod.position.set(0, lampY + rodLen / 2, 0);
     group.add(rod);
 
-    // Warm down-light always present (room stays lit while Tripo generates).
-    const lamp = new THREE.PointLight(0xFFD89A, 1.1, 18, 1.4);
-    lamp.position.set(0, lampY - 0.1, 0);
+    // Warm down-light positioned exactly at the chandelier's bulb core
+    // (yAlign:'center' centres the GLB on lampY, so the bulb cluster sits
+    // a touch below centre). Cast shadows so the rod and the fountain
+    // edges below it pick up real chandelier-shaped silhouettes.
+    const lamp = new THREE.PointLight(0xFFD89A, 1.6, 24, 1.6);
+    lamp.position.set(0, lampY - 0.25, 0);
+    lamp.castShadow = true;
+    lamp.shadow.mapSize.set(512, 512);
     group.add(lamp);
+    this.chandelierLamp = lamp;
 
     // Tripo-generated chandelier mounted at the bottom of the rod.
     mountTripoModel(group, 'chandelier',
@@ -426,11 +427,19 @@ export class CampusScene {
         footDots.push(dot);
       }
 
-      // Soft colored point light pushed forward of the gate so it lights the
-      // front face cleanly without back-illuminating the lintel.
-      const portalLight = new THREE.PointLight(zone.color, 0.9, 8, 2.0);
-      portalLight.position.set(0, 2.0, 0.6);
+      // Coloured PointLight pushed forward of the gate. With the central
+      // ceiling lamp now the only other warm source, each portal owns
+      // its own pool of zone-coloured light on the floor and fountain
+      // base — a clear visual cue from across the dim lobby.
+      const portalLight = new THREE.PointLight(zone.color, 2.0, 14, 1.7);
+      portalLight.position.set(0, 2.2, 0.8);
       g.add(portalLight);
+
+      // A second, low-strength back-glow behind the lintel that paints
+      // colour onto the curved hub wall so the gateway "haloes" outward.
+      const portalHalo = new THREE.PointLight(zone.color, 0.9, 8, 1.8);
+      portalHalo.position.set(0, 3.6, -0.4);
+      g.add(portalHalo);
 
       this.scene.add(g);
       this.portalMeshes.push(g);   // XR raycasts against these
@@ -440,7 +449,7 @@ export class CampusScene {
       this.portalAnims.push({
         torus, outerRing, studs, motes, footDots,
         leftCrystal: left.crystal, rightCrystal: right.crystal,
-        keyGem, portalLight, color: zone.color
+        keyGem, portalLight, portalHalo, color: zone.color
       });
     });
   }
@@ -1064,8 +1073,10 @@ export class CampusScene {
         if (p.rightCrystal) { p.rightCrystal.material.emissiveIntensity = cb; p.rightCrystal.rotation.y = -t*0.6; }
         if (p.keyGem)       { p.keyGem.material.emissiveIntensity = 0.9 + Math.sin(t*1.8)*0.5; p.keyGem.rotation.y = t*0.8; }
 
-        // Subtle gate light breathing
-        if (p.portalLight) p.portalLight.intensity = 0.7 + Math.sin(t*1.2)*0.3;
+        // Subtle gate light breathing — matched to the new higher base
+        // intensities so each portal gently pulses without going dark.
+        if (p.portalLight) p.portalLight.intensity = 1.7 + Math.sin(t*1.2)*0.5;
+        if (p.portalHalo)  p.portalHalo.intensity  = 0.7 + Math.sin(t*1.2 + 0.6)*0.3;
       }
     }
 
