@@ -205,6 +205,47 @@ export const MODELS = {
       'a classic red and white striped paper popcorn bucket overflowing with golden buttered popcorn, ' +
       'cinema theme, photorealistic 3D render, single isolated object',
   },
+  theater_curtain_red: {
+    prompt:
+      'a heavy red velvet stage curtain drawn open and tied back with a thick golden ' +
+      'rope tassel, deep luxurious pleats and folds, ceiling-to-floor length, ' +
+      'classic movie theatre proscenium drape, photorealistic 3D render, ' +
+      'single isolated object on transparent background',
+  },
+  recliner_loveseat: {
+    prompt:
+      'a plush deep brown leather two-seat home-cinema recliner loveseat, ' +
+      'oversized padded armrests with built-in cup holders, soft headrests, ' +
+      'reclining backrests, modern luxury home theater seating, front-facing, ' +
+      'photorealistic 3D furniture render, single isolated object',
+  },
+  movie_poster_classic: {
+    prompt:
+      'a framed vintage classic black and white movie poster, dramatic typography, ' +
+      'ornate gold picture frame, hanging on a wall, retro cinema decor, ' +
+      'photorealistic 3D render, single isolated object',
+  },
+  movie_poster_modern: {
+    prompt:
+      'a framed modern minimalist movie poster with bold colourful illustration ' +
+      'and large stylised typography, sleek matte black picture frame, ' +
+      'hanging on a wall, contemporary cinema decor, photorealistic 3D render, ' +
+      'single isolated object',
+  },
+  popcorn_machine: {
+    prompt:
+      'a vintage red and gold popcorn cart machine on small wheels, glass display case ' +
+      'full of fluffy golden popcorn, ornate gold trim and finials, marquee sign on top ' +
+      'reading POPCORN, classic 1950s movie theatre snack bar piece, front-facing, ' +
+      'photorealistic 3D render, single isolated object',
+  },
+  wall_sconce_theater: {
+    prompt:
+      'an elegant brass art-deco wall sconce with a frosted amber glass shade, ' +
+      'two warm glowing bulbs casting soft light upward, polished brass mounting plate, ' +
+      'classic movie theatre lobby fixture, photorealistic 3D render, ' +
+      'single isolated object on transparent background',
+  },
 
   // ── HealingVRRoom ───────────────────────────────────────────
   zen_rock_garden: {
