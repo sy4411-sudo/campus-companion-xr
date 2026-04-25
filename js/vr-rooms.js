@@ -1002,6 +1002,111 @@ class StudyVRRoom extends VRRoom {
 class LeisureVRRoom extends VRRoom {
   constructor(scene, options = {}) {
     super(scene, options);
+
+    // ── Companion behaviour state (mirror of ChatVRRoom) ─────
+    // The leisure-room companion 灵灵 is a chatty, warm cinephile
+    // friend who sits next to the player and reacts to the on-screen
+    // movie. Personality: enthusiastic, gentle, a little philosophical;
+    // talks bilingually (Chinese first, English alongside) so 童童-
+    // style speech bubbles read naturally for both audiences.
+    this._studentLocal = new THREE.Vector3();
+    this._hasStudent   = false;
+    // Sit a bit to the right of the player, level with the eyes when
+    // seated. y=1.05 puts the companion at chest height for a 1.6m
+    // standing user, perfect for a "sitting beside" feel.
+    this._followOffset = new THREE.Vector3(0.95, -0.55, 0.4);
+
+    // Last clip the companion has commented on, so we don't re-greet
+    // each frame whenever ht:load fires repeatedly.
+    this._lastClipIndex = -1;
+    this._lastSaidAt    = 0;
+    // Schedule of the next idle / mid-movie reaction.
+    this._idleTimer     = null;
+    // Timer for the initial "find the player & greet" sequence.
+    this._greetTimer    = null;
+
+    // Bound listeners (kept as fields so exit() can remove them).
+    this._onHTPlay  = null;
+    this._onHTPause = null;
+    this._onHTLoad2 = null;
+
+    // ── Per-clip reaction pools (keyed by SCREEN_CLIPS index) ──
+    // Lines were authored to match each clip's tone: 天空之城 nostalgic,
+    // 心灵捕手 introspective, 绿皮书 reflective on dignity & friendship.
+    // Each array is randomised so re-watching never feels canned.
+    this._clipLines = [
+      { // 0 — 天空之城 / Castle in the Sky
+        intro: [
+          '《天空之城》！\nLaputa is one of my favourites — pure wonder.',
+          '久石让的旋律一响起，整个房间都温柔了。\n这一段听一百次也不腻。',
+        ],
+        mid: [
+          '飞行石发光的样子……\n像把童年的勇气重新点亮了。',
+          'The sky here feels alive — clouds, ruins, courage.',
+          '你看希达和帕祖，他们什么都没有，\n却拥有彼此 —— 已经是最大的财富。',
+        ],
+        closing: [
+          '“天空之城”不是一个地方，\n是每个人心里那块没被现实折断的部分。',
+        ],
+      },
+      { // 1 — Good Will Hunting / 心灵捕手
+        intro: [
+          '《心灵捕手》——\nthis one always makes me sit a little closer.',
+          'Robin Williams 的眼神，\n比任何一句台词都更治愈。',
+        ],
+        mid: [
+          '"It’s not your fault." 这一句台词\n值得被反反复复听见。',
+          'Will 的天赋是真的，\n但他真正缺的是有人愿意慢下来听他说话。',
+          '我有时候觉得，被理解\n比被解决更接近治愈。',
+        ],
+        closing: [
+          'It is not your fault. \n你也值得这样温柔的一句。',
+        ],
+      },
+      { // 2 — Green Book / 绿皮书
+        intro: [
+          '《绿皮书》——\nfriendship in unlikely places, my favourite kind.',
+          'Don 博士那种克制的优雅，\n一开口就让整个画面安静下来。',
+        ],
+        mid: [
+          'Tony 把炸鸡递过去的那一刻，\n两个世界第一次真的有了交集。',
+          '"Dignity always prevails." \n这句话值得被一直记住。',
+          '看他们在路上慢慢学着理解彼此，\n比任何一段独白都动人。',
+        ],
+        closing: [
+          'Some roads change you forever.\n这就是看电影最好的样子。',
+        ],
+      },
+    ];
+
+    // Generic, mood-neutral lines used when no clip is selected, when
+    // the player just walks around, or as filler between specific
+    // reactions. Mixed with bilingual entries on purpose.
+    this._idleLines = {
+      greet: [
+        '嘿，你来啦！\nI saved you the best seat. 想看哪一部？',
+        '欢迎来到家庭影院~\nPick anything from the side menu and I’ll watch with you.',
+      ],
+      pickPrompt: [
+        '想看点什么？我都陪你看。\nClassics, indie, whatever you’re in the mood for.',
+        '点一下电影屏幕就能开始啦。\nOr tell me a vibe, I’ll help you pick.',
+      ],
+      noPlayback: [
+        '我们就这样坐着也很好~\nSometimes silence is its own movie.',
+      ],
+      paused: [
+        '暂停一下也好，\nlet the moment breathe. 喝口水？',
+        '想聊聊刚才那段吗？\nI’ll wait — take your time.',
+      ],
+      resume: [
+        '好，继续~ \nLet’s see where this goes.',
+      ],
+      followAlong: [
+        '我就坐在你旁边喔。\nRight here with you.',
+        '电影最棒的不只是画面，\n是身边有人一起看。',
+      ],
+    };
+
     this.build();
   }
 
@@ -1011,7 +1116,11 @@ class LeisureVRRoom extends VRRoom {
     // BaseVRRoom default so the room feels like a private screening room
     // before any prop is even loaded.
     this._buildTheaterShell(18, 16, 6);
-    this._buildAICompanion(-3, 0.5, 1, 0xC0A0D8);
+    // Spawn 灵灵 floating near the right-side wall art so on-entry the
+    // player sees her drift in from the side rather than popping in
+    // beside the seats. The follow logic in updateStudentPosition()
+    // will pull her toward the player smoothly.
+    this._buildAICompanion(-5.5, 1.2, 5.0, 0xC0A0D8);
     this._buildExitDoor(0, 0, 7);
 
     // ── Cinema lighting rig (warm, layered) ───────────────────
@@ -1769,6 +1878,43 @@ class LeisureVRRoom extends VRRoom {
     }
   }
 
+  // ── Lifecycle ────────────────────────────────────────────
+  enter() {
+    super.enter();
+
+    // Greet the player after a beat so the companion has time to
+    // float over to the seats. The first idle chatter is scheduled
+    // from inside _say('greet') to avoid double-speaking on entry.
+    if (this._greetTimer) clearTimeout(this._greetTimer);
+    this._greetTimer = setTimeout(() => {
+      if (!this.isActive) return;
+      this._say('greet');
+      // Kick off the recurring idle chatter loop.
+      this._scheduleIdleChatter(8000 + Math.random() * 6000);
+    }, 1800);
+
+    // Subscribe to the home-theater player events so 灵灵 reacts in
+    // real time when the player picks a clip / hits play / pause.
+    this._onHTPlay  = () => this._onPlaybackStart();
+    this._onHTPause = () => this._onPlaybackPause();
+    this._onHTLoad2 = (e) => this._onClipLoaded(e);
+    window.addEventListener('ht:play',  this._onHTPlay);
+    window.addEventListener('ht:pause', this._onHTPause);
+    window.addEventListener('ht:load',  this._onHTLoad2);
+
+    // If the player previously left mid-movie and walked back in,
+    // greet them with a "welcome back" specific to the current clip
+    // instead of the generic intro.
+    const HT = window.HomeTheater;
+    if (HT?.isReady?.()) {
+      this._lastClipIndex = HT.currentIndex;
+      setTimeout(() => {
+        if (!this.isActive) return;
+        this._say('mid', HT.currentIndex);
+      }, 4500);
+    }
+  }
+
   // Pause playback + close the overlay when the player walks back
   // to the hub, so audio doesn't follow them around the building.
   exit() {
@@ -1778,10 +1924,151 @@ class LeisureVRRoom extends VRRoom {
       HT.close?.();
       HT.video?.pause?.();
     }
+    // VideoTexture rebind listener
     if (this._onHTLoad) {
       window.removeEventListener('ht:load', this._onHTLoad);
       this._onHTLoad = null;
     }
+    // Companion behaviour listeners
+    if (this._onHTPlay)  window.removeEventListener('ht:play',  this._onHTPlay);
+    if (this._onHTPause) window.removeEventListener('ht:pause', this._onHTPause);
+    if (this._onHTLoad2) window.removeEventListener('ht:load',  this._onHTLoad2);
+    this._onHTPlay = this._onHTPause = this._onHTLoad2 = null;
+
+    // Stop chatter timers + reset companion state
+    if (this._idleTimer)  { clearTimeout(this._idleTimer);  this._idleTimer  = null; }
+    if (this._greetTimer) { clearTimeout(this._greetTimer); this._greetTimer = null; }
+    this.companion?.hideBubble();
+    this.companion?.setMode('idle');
+    this.companion?.setExpression('idle');
+    this.companion?.setFollowTarget(null);
+  }
+
+  // ── Per-frame: pull 灵灵 to a comfortable seat-mate offset ──
+  // Same shape as ChatVRRoom.updateStudentPosition: convert player
+  // world pos → room-local, look at them, and set a follow target a
+  // small, clamped distance to the side. The y component drops below
+  // standing eye level so 灵灵 reads as "sitting" beside the player.
+  updateStudentPosition(worldPos) {
+    if (!this.companion) return;
+    const local = this._studentLocal.copy(worldPos).sub(this.roomPosition);
+    this._hasStudent = true;
+
+    this.companion.lookAtStudent(local.clone());
+
+    const tgt = local.clone().add(this._followOffset);
+    const half  = (this.roomSize?.width || 18) / 2 - 1.0;
+    const halfD = (this.roomSize?.depth || 16) / 2 - 1.0;
+    tgt.x = Math.max(-half,  Math.min(half,  tgt.x));
+    tgt.z = Math.max(-halfD, Math.min(halfD, tgt.z));
+    // Clamp Y so 灵灵 never sinks into the floor when the player
+    // crouches and never floats into the chandelier when they stand.
+    tgt.y = Math.max(0.6, Math.min(1.6, tgt.y));
+    this.companion.setFollowTarget(tgt);
+  }
+
+  // ── Companion speech helpers ────────────────────────────
+  /**
+   * Speak a randomly-picked line from the matching pool. Categories:
+   *   'greet'         — first hello on enter
+   *   'pickPrompt'    — nudge user to choose a movie
+   *   'noPlayback'    — chatter when nothing is playing
+   *   'paused' / 'resume'
+   *   'followAlong'   — "I'm right here" filler during long clips
+   *   'intro' / 'mid' / 'closing' — clip-specific (need clipIndex)
+   */
+  _say(category, clipIndex) {
+    if (!this.companion?.say) return;
+    let pool;
+    if (category === 'intro' || category === 'mid' || category === 'closing') {
+      const idx = (typeof clipIndex === 'number')
+        ? clipIndex : window.HomeTheater?.currentIndex;
+      const clip = this._clipLines?.[idx];
+      pool = clip?.[category];
+    } else {
+      pool = this._idleLines?.[category];
+    }
+    if (!pool || pool.length === 0) return;
+    const text = pool[(Math.random() * pool.length) | 0];
+    this.companion.say(text);
+    this._lastSaidAt = performance.now();
+  }
+
+  // Recursive setTimeout loop — schedules itself again every time it
+  // fires so we get a natural irregular cadence without setInterval
+  // running while the room is hidden.
+  _scheduleIdleChatter(initialDelayMs) {
+    if (this._idleTimer) clearTimeout(this._idleTimer);
+    const delay = initialDelayMs ?? (14000 + Math.random() * 9000);
+    this._idleTimer = setTimeout(() => {
+      this._idleTimer = null;
+      if (!this.isActive) return;
+      this._fireIdleChatter();
+      // Schedule the next one — slower while a clip is playing so we
+      // don't spam the reading user with bubbles.
+      const HT = window.HomeTheater;
+      const playing = HT?.video && !HT.video.paused && !HT.video.ended;
+      const nextDelay = playing
+        ? 18000 + Math.random() * 12000
+        : 11000 + Math.random() * 8000;
+      this._scheduleIdleChatter(nextDelay);
+    }, Math.max(1500, delay));
+  }
+
+  _fireIdleChatter() {
+    const HT = window.HomeTheater;
+    const ready   = HT?.isReady?.();
+    const playing = ready && HT.video && !HT.video.paused && !HT.video.ended;
+
+    if (playing && typeof HT.currentIndex === 'number') {
+      // 50/50 between a clip-specific mid line and a generic
+      // "I'm here with you" follow-along filler.
+      if (Math.random() < 0.6) this._say('mid', HT.currentIndex);
+      else                     this._say('followAlong');
+    } else if (ready && HT.video?.paused) {
+      this._say('paused');
+    } else {
+      // Nothing has been picked yet — gently encourage the player to
+      // pick a clip from the side menu (or click the screen).
+      if (Math.random() < 0.65) this._say('pickPrompt');
+      else                      this._say('noPlayback');
+    }
+  }
+
+  // ── Home Theater event handlers ─────────────────────────
+  _onClipLoaded(e) {
+    const HT = window.HomeTheater;
+    const idx = HT?.currentIndex ?? -1;
+    if (idx === this._lastClipIndex) return;     // same clip → skip
+    this._lastClipIndex = idx;
+    this.companion?.setExpression('happy');
+    // Small delay so the speech bubble doesn't appear before the
+    // playback actually starts.
+    setTimeout(() => this._say('intro', idx), 600);
+  }
+
+  _onPlaybackStart() {
+    // If we're resuming after a recent pause, say something resume-y;
+    // otherwise let the intro handler (fired by ht:load) take over.
+    const since = performance.now() - this._lastSaidAt;
+    if (since < 1500) return;       // intro just ran, don't double up
+    if (this._lastClipIndex < 0) return;  // first ever play handled by load
+    this.companion?.setExpression('happy');
+    this._say('resume');
+  }
+
+  _onPlaybackPause() {
+    // Only react if there was a real pause (not the brief pause that
+    // happens between loadSrc + autoplay during ht:load).
+    const HT = window.HomeTheater;
+    if (!HT?.video || HT.video.ended) return;
+    setTimeout(() => {
+      // Confirm it's still paused (debounce the load→autoplay pause).
+      if (HT.video?.paused && !HT.video.ended && this.isActive) {
+        this.companion?.setExpression('thinking');
+        this._say('paused');
+      }
+    }, 700);
   }
 
   getSpawnPoint() {
@@ -2269,7 +2556,7 @@ class GamesVRRoom extends VRRoom {
   // ──────────────────────────────────────���─────────────────────
   //  Make the giant floor board itself a click target. The handler
   //  is always installed but only does work while a game is active.
-  // ────────────────────────────────────────────────────────────
+  // ───────────────────────���────────────────────────────────────
   _enableBoardClick() {
     const top = this._boardTopMesh;
     if (!top) return;
