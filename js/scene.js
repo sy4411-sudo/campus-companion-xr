@@ -929,12 +929,23 @@ export class CampusScene {
     this._screenNDC(e);
     const hits = this._castDesktop();
     if (hits.length === 0) return;
-    const obj = hits[0].object;
+    const hit = hits[0];
+    const obj = hit.object;
 
     // 1) Walk up to find a userData.onClick handler (e.g. exit portal in VR rooms).
     let m = obj;
     while (m && !m.userData?.onClick) m = m.parent;
-    if (m?.userData?.onClick) { m.userData.onClick(m, { source: 'desktop' }); return; }
+    if (m?.userData?.onClick) {
+      const result = m.userData.onClick(m, {
+        source: 'desktop',
+        point: hit.point ? hit.point.clone() : null,
+        uv: hit.uv ? hit.uv.clone() : null,
+        hitObject: obj,
+      });
+      // Handlers may return `false` to opt out and let the click fall
+      // through to zone-entry below (e.g. inactive floor game board).
+      if (result !== false) return;
+    }
 
     // 2) Zone entry (platform / portal plane).
     const zone = obj.userData.zone || ZONES[obj.userData.zoneIdx];

@@ -221,7 +221,7 @@ class ChatVRRoom extends VRRoom {
     // rotationY = -π/2    → 物体正面朝 +X（朝向右侧）
     // rotationY = +π/2    → 物体正面朝 -X（朝向左侧）
     //
-    // ����家从 z=+9 入场，朝 -Z 走。所以��望玩家看到正面的物件用 π，
+    // ����家从 z=+9 入场��朝 -Z 走。所以��望玩家看到正面的物件用 π，
     // 朝向沙发/壁炉那侧（-Z）的物件用 0。
 
     // ── 地毯（用 PlaneGeometry + Canvas 纹理，确保完全平铺地面）─
@@ -616,7 +616,7 @@ class ChatVRRoom extends VRRoom {
     return new THREE.CanvasTexture(c);
   }
 
-  // ── 火焰 / 落地灯 flicker ─────────────────────────────
+  // ── 火焰 / 落地灯 flicker ───────���─────────────────────
   update(delta, camWorld) {
     super.update(delta, camWorld);
     const t = performance.now() * 0.001;
@@ -1258,27 +1258,576 @@ class GamesVRRoom extends VRRoom {
       onSelect: () => this._endGame(),
     });
 
+    // ── Gomoku game state container ─────────────────────────────
+    // Geometry constants come straight from _buildFloorBoard so the
+    // grid, stones, and click handler all stay in sync if the board
+    // is ever resized.
+    const GRID = 19;                  // 19 lines on the standard go board
+    const sideLen = 13.6;
+    const margin = sideLen * 0.06;    // matches _makeGoBoardTexture
+    const inner = sideLen - 2 * margin;
+    const step = inner / (GRID - 1);
+    const stoneR = step * 0.42;       // ~22mm ÷ 26mm cell on a real board
+    const stoneT = stoneR * 0.85;     // biconvex thickness (≈9mm/22mm)
+    this._gomoku = {
+      GRID, step, inner, margin,
+      sideLen,
+      stoneR, stoneT,
+      active: false,
+      turn: null,                     // 'player' | 'ai' | null
+      board: null,                    // Int8Array[GRID][GRID]: 0/1/2
+      stonesGroup: null,              // THREE.Group holding placed stones
+      lastMarker: null,               // small ring above last move
+      banner: null,                   // victory banner group
+      confetti: null,                 // confetti Points + velocities
+      stoneGeo: null,
+      blackMat: null,
+      whiteMat: null,
+      thinking: false,
+    };
+    this._buildGomokuAssets();
+    this._enableBoardClick();
+
     this.onReady();
   }
 
   // ────────────────────────────────────────────────────────────
-  //  Game lifecycle stubs — wired up later. Right now they just
-  //  give the player a friendly cue so the buttons feel alive.
+  //  Update hook — animate confetti / billboard victory banner.
+  // ────────────────────────────────────────────────────────────
+  update(delta, camWorld) {
+    super.update(delta, camWorld);
+    this._tickConfetti(delta);
+    this._billboardBanner(camWorld);
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Game lifecycle
   // ────────────────────────────────────────────────────────────
   _startGame() {
+    const g = this._gomoku;
+    // Always restart cleanly — pressing START mid-game resets the position.
+    this._clearStones();
+    this._hideVictoryBanner();
+    // Five-in-a-row uses the 19×19 line grid printed on the Go board, so
+    // make sure that board art is showing even if Chess was last selected.
+    this._setBoardMode('go');
+
+    g.board = Array.from({ length: g.GRID }, () =>
+      new Int8Array(g.GRID));
+    g.active = true;
+    g.turn = 'player';                // player always moves first (黑棋)
+    g.thinking = false;
+
     if (this.companion) {
       this.companion.setExpression('happy');
-      setTimeout(() => this.companion.setExpression('idle'), 1200);
+      this.companion.say?.('开始啦！你执黑先手——\n点棋盘上落子吧。');
     }
-    // TODO: hook into actual game logic when implemented.
   }
 
   _endGame() {
+    const g = this._gomoku;
+    g.active = false;
+    g.turn = null;
+    g.board = null;
+    g.thinking = false;
+    this._clearStones();
+    this._hideVictoryBanner();
     if (this.companion) {
-      this.companion.setExpression('empathy');
-      setTimeout(() => this.companion.setExpression('idle'), 1200);
+      this.companion.setExpression('idle');
+      this.companion.say?.('好的，下次再来一局！');
     }
-    // TODO: hook into actual game logic when implemented.
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  One-time GPU asset prep so click→spawn doesn't allocate.
+  // ────────────────────────────────────────────────────────────
+  _buildGomokuAssets() {
+    const g = this._gomoku;
+
+    // Biconvex stone profile via LatheGeometry — proportional to a real
+    // go stone (R=0.5×cell, T≈0.4×R). We sample a circular arc whose
+    // chord is the stone's edge so the top and bottom domes are convex
+    // but shallow, exactly like a real "Yunzi" stone.
+    const R = g.stoneR;
+    const halfT = g.stoneT / 2;
+    const arcR = (R * R + halfT * halfT) / g.stoneT;     // sphere radius
+    const SEG = 24;
+    const startA = Math.PI / 2;                           // top pole
+    const endA = Math.acos(R / arcR);                     // edge
+    const profile = [];
+    for (let i = 0; i <= SEG; i++) {
+      const a = startA - (i / SEG) * (startA - endA);
+      const x = arcR * Math.sin(a);
+      const y = (halfT - arcR) + arcR * Math.cos(a);
+      profile.push(new THREE.Vector2(x, y));
+    }
+    // Mirror to bottom dome
+    for (let i = SEG - 1; i >= 0; i--) {
+      const top = profile[i];
+      profile.push(new THREE.Vector2(top.x, -top.y));
+    }
+    g.stoneGeo = new THREE.LatheGeometry(profile, 36);
+
+    g.blackMat = new THREE.MeshStandardMaterial({
+      color: 0x0E0E14, roughness: 0.28, metalness: 0.1,
+    });
+    g.whiteMat = new THREE.MeshStandardMaterial({
+      color: 0xF5EFD7, roughness: 0.32, metalness: 0.05,
+    });
+
+    g.stonesGroup = new THREE.Group();
+    this.group.add(g.stonesGroup);
+
+    // Small last-move marker — a thin red ring that hovers just above
+    // the most recent stone. Re-used for every move.
+    const ringGeo = new THREE.RingGeometry(R * 0.32, R * 0.5, 24);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xFF3A50, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.9, depthTest: false,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.visible = false;
+    ring.renderOrder = 5;
+    this.group.add(ring);
+    g.lastMarker = ring;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Make the giant floor board itself a click target. The handler
+  //  is always installed but only does work while a game is active.
+  // ────────────────────────────────────────────────────────────
+  _enableBoardClick() {
+    const top = this._boardTopMesh;
+    if (!top) return;
+    top.userData.onClick = (mesh, ctx) => this._handleBoardClick(ctx);
+    if (!this.interactables.includes(top)) this.interactables.push(top);
+  }
+
+  _handleBoardClick(ctx) {
+    const g = this._gomoku;
+    // Returning `false` lets XR / desktop continue to the next handler
+    // (teleport for VR, or zone navigation for desktop) so the giant
+    // floor board never blocks normal locomotion when no game is on.
+    if (!g.active || g.turn !== 'player' || g.thinking) return false;
+    if (!ctx?.point) return false;
+
+    // Convert world hit point → room-local board coords. The board top
+    // sits centred at room-local origin in x,z, so this is a direct
+    // shift by the room's world position.
+    const local = this.group.worldToLocal(ctx.point.clone());
+    const half = g.inner / 2;
+    const col = Math.round((local.x + half) / g.step);
+    const row = Math.round((local.z + half) / g.step);
+    // Out-of-grid clicks fall through (e.g. trying to teleport on the
+    // wood margin around the printed board).
+    if (row < 0 || row >= g.GRID || col < 0 || col >= g.GRID) return false;
+    // Reject clicks too far from a line intersection — fall through so
+    // the player can still teleport on the cell interiors.
+    const targetX = -half + col * g.step;
+    const targetZ = -half + row * g.step;
+    const dx = local.x - targetX, dz = local.z - targetZ;
+    if (Math.hypot(dx, dz) > g.step * 0.45) return false;
+    // Hit a real intersection. Consume the click (haptic + no teleport)
+    // but bail out if the spot is occupied.
+    if (g.board[row][col] !== 0) return;
+
+    this._placeStone(row, col, 1);            // 1 = player (black)
+    if (this._checkWin(row, col, 1)) {
+      this._onWin('player');
+      return;
+    }
+    g.turn = 'ai';
+    g.thinking = true;
+    if (this.companion) this.companion.setExpression('thinking');
+    // Small think-delay so the AI feels deliberate rather than instant.
+    setTimeout(() => this._aiMove(), 480);
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Place a stone at (row, col) for player (1=black, 2=white).
+  //  Records the move on the logical board, spawns the 3D mesh, and
+  //  moves the last-move ring on top.
+  // ────────────────────────────────────────────────────────────
+  _placeStone(row, col, who) {
+    const g = this._gomoku;
+    g.board[row][col] = who;
+
+    const half = g.inner / 2;
+    const x = -half + col * g.step;
+    const z = -half + row * g.step;
+    // Stone sits on top of the slab. Slab top y = 0.04 + 0.06/2 = 0.07,
+    // and the lathe geometry is centred (so its Y origin is the stone's
+    // mid-thickness). Lift by halfT.
+    const y = 0.07 + g.stoneT / 2;
+
+    const stone = new THREE.Mesh(
+      g.stoneGeo,
+      who === 1 ? g.blackMat : g.whiteMat,
+    );
+    stone.position.set(x, y, z);
+    stone.castShadow = false;
+    stone.receiveShadow = false;
+    g.stonesGroup.add(stone);
+
+    g.lastMarker.position.set(x, y + g.stoneT * 0.55, z);
+    g.lastMarker.visible = true;
+  }
+
+  _clearStones() {
+    const g = this._gomoku;
+    if (g.stonesGroup) {
+      // Dispose just the children; the shared geometry/material live on g.
+      while (g.stonesGroup.children.length) {
+        g.stonesGroup.remove(g.stonesGroup.children[0]);
+      }
+    }
+    if (g.lastMarker) g.lastMarker.visible = false;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Win detection — scan from the just-placed stone in 4 axes.
+  // ────────────────────────────────────────────────────────────
+  _checkWin(row, col, who) {
+    const g = this._gomoku;
+    const dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];
+    for (const [dr, dc] of dirs) {
+      let n = 1;
+      for (let k = 1; k < 5; k++) {
+        const r = row + dr * k, c = col + dc * k;
+        if (r < 0 || r >= g.GRID || c < 0 || c >= g.GRID) break;
+        if (g.board[r][c] !== who) break;
+        n++;
+      }
+      for (let k = 1; k < 5; k++) {
+        const r = row - dr * k, c = col - dc * k;
+        if (r < 0 || r >= g.GRID || c < 0 || c >= g.GRID) break;
+        if (g.board[r][c] !== who) break;
+        n++;
+      }
+      if (n >= 5) return true;
+    }
+    return false;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Heuristic AI: classic gomoku threat-and-defend scoring.
+  //  For every empty cell, score the offensive value of placing AI
+  //  there + the defensive value of denying the opponent. We only
+  //  evaluate cells within 2 of an existing stone for performance.
+  // ────────────────────────────────────────────────────────────
+  _aiMove() {
+    const g = this._gomoku;
+    // Bail if the game ended OR the player restarted while this move was
+    // queued in setTimeout — that flips turn back to 'player' and a stale
+    // AI move would clobber the fresh board.
+    if (!g.active || g.turn !== 'ai') return;
+
+    const AI = 2, P = 1;
+    const N = g.GRID;
+    const board = g.board;
+
+    // Has any stone been placed? If not, AI plays the centre.
+    let any = false;
+    outer: for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) if (board[r][c]) { any = true; break outer; }
+    }
+    if (!any) {
+      this._finishAIMove(9, 9);
+      return;
+    }
+
+    const scoreLine = (count, open) => {
+      if (count >= 5) return 1_000_000;
+      if (count === 4) return open === 2 ? 80_000 : open === 1 ? 1_500 : 0;
+      if (count === 3) return open === 2 ? 2_500 : open === 1 ? 220 : 0;
+      if (count === 2) return open === 2 ? 180 : open === 1 ? 18 : 0;
+      if (count === 1) return open === 2 ? 6 : open === 1 ? 1 : 0;
+      return 0;
+    };
+    const evalCell = (r, c, who) => {
+      let total = 0;
+      const dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];
+      for (const [dr, dc] of dirs) {
+        let lc = 0, lb = false, rc = 0, rb = false;
+        for (let k = 1; k <= 4; k++) {
+          const rr = r - dr * k, cc = c - dc * k;
+          if (rr < 0 || rr >= N || cc < 0 || cc >= N) { lb = true; break; }
+          const v = board[rr][cc];
+          if (v === who) lc++;
+          else if (v !== 0) { lb = true; break; }
+          else break;
+        }
+        for (let k = 1; k <= 4; k++) {
+          const rr = r + dr * k, cc = c + dc * k;
+          if (rr < 0 || rr >= N || cc < 0 || cc >= N) { rb = true; break; }
+          const v = board[rr][cc];
+          if (v === who) rc++;
+          else if (v !== 0) { rb = true; break; }
+          else break;
+        }
+        const cnt = lc + rc + 1;
+        const open = (lb ? 0 : 1) + (rb ? 0 : 1);
+        total += scoreLine(cnt, open);
+      }
+      return total;
+    };
+    const hasNeighbour = (r, c) => {
+      for (let dr = -2; dr <= 2; dr++) {
+        for (let dc = -2; dc <= 2; dc++) {
+          if (!dr && !dc) continue;
+          const rr = r + dr, cc = c + dc;
+          if (rr >= 0 && rr < N && cc >= 0 && cc < N && board[rr][cc]) return true;
+        }
+      }
+      return false;
+    };
+
+    let best = -Infinity, choices = [];
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        if (board[r][c] !== 0) continue;
+        if (!hasNeighbour(r, c)) continue;
+        const off = evalCell(r, c, AI);
+        const def = evalCell(r, c, P) * 0.92;     // slight tilt toward attack
+        const s = off + def;
+        if (s > best) { best = s; choices = [[r, c]]; }
+        else if (s === best) choices.push([r, c]);
+      }
+    }
+    let move = choices[(Math.random() * choices.length) | 0];
+    if (!move) move = [9, 9];
+    this._finishAIMove(move[0], move[1]);
+  }
+
+  _finishAIMove(row, col) {
+    const g = this._gomoku;
+    if (!g.active) return;
+    this._placeStone(row, col, 2);
+    g.thinking = false;
+    if (this._checkWin(row, col, 2)) {
+      this._onWin('ai');
+      return;
+    }
+    g.turn = 'player';
+    if (this.companion) this.companion.setExpression('idle');
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Victory: freeze input, raise banner + confetti, set companion mood.
+  // ────────────────────────────────────────────────────────────
+  _onWin(winner) {
+    const g = this._gomoku;
+    g.active = false;
+    g.thinking = false;
+    g.turn = null;
+    this._showVictoryBanner(winner);
+    if (this.companion) {
+      if (winner === 'player') {
+        this.companion.setExpression('happy');
+        this.companion.say?.('哇！你赢啦！\n再来一局？按"开始游戏"继续~');
+      } else {
+        this.companion.setExpression('empathy');
+        this.companion.say?.('这局我赢啦！\n下次你可以的，按"开始游戏"再来~');
+      }
+    }
+  }
+
+  _showVictoryBanner(winner) {
+    const g = this._gomoku;
+    if (!g.banner) {
+      const banner = new THREE.Group();
+      banner.position.set(0, 3.6, 0);     // floats above board centre
+      this.group.add(banner);
+      g.banner = banner;
+    }
+    // Rebuild the texture each time so winner-specific copy lands fresh.
+    while (g.banner.children.length) {
+      const c = g.banner.children[0];
+      g.banner.remove(c);
+      c.material?.map?.dispose?.();
+      c.material?.dispose?.();
+      c.geometry?.dispose?.();
+    }
+
+    const tex = this._makeVictoryBannerTexture(winner);
+    const w = 6, h = 2.2;
+    const plate = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, h),
+      new THREE.MeshBasicMaterial({
+        map: tex, transparent: true, side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    g.banner.add(plate);
+
+    // Glow halo behind the plate.
+    const glow = new THREE.Mesh(
+      new THREE.PlaneGeometry(w * 1.18, h * 1.32),
+      new THREE.MeshBasicMaterial({
+        color: winner === 'player' ? 0xFFD86B : 0x7AB6FF,
+        transparent: true, opacity: 0.32, depthWrite: false,
+      }),
+    );
+    glow.position.z = -0.02;
+    g.banner.add(glow);
+
+    g.banner.visible = true;
+    this._spawnConfetti();
+  }
+
+  _hideVictoryBanner() {
+    const g = this._gomoku;
+    if (g.banner) g.banner.visible = false;
+    if (g.confetti) {
+      this.group.remove(g.confetti.points);
+      g.confetti.points.geometry.dispose();
+      g.confetti.points.material.dispose();
+      g.confetti = null;
+    }
+  }
+
+  _makeVictoryBannerTexture(winner) {
+    const W = 1536, H = 560;
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+
+    // Rounded glossy plate with gold/blue trim.
+    const r = 56;
+    ctx.fillStyle = 'rgba(15, 12, 22, 0.92)';
+    this._roundRect(ctx, 0, 0, W, H, r);
+    ctx.fill();
+
+    const accent = winner === 'player' ? '#FFD86B' : '#7AB6FF';
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = accent;
+    ctx.shadowColor = accent;
+    ctx.shadowBlur = 26;
+    this._roundRect(ctx, 14, 14, W - 28, H - 28, r - 10);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Big bilingual headline.
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 156px "PingFang SC", "Microsoft YaHei", sans-serif';
+    const cn = winner === 'player' ? '恭喜获胜！' : '电脑赢啦~';
+    ctx.fillText(cn, W / 2, H / 2 - 56);
+
+    ctx.fillStyle = accent;
+    ctx.font = 'bold 78px "Helvetica Neue", Arial, sans-serif';
+    const en = winner === 'player' ? 'CONGRATULATIONS' : 'COMPUTER WINS';
+    ctx.fillText(en, W / 2, H / 2 + 70);
+
+    ctx.fillStyle = '#A8A8C0';
+    ctx.font = '40px "Helvetica Neue", Arial, sans-serif';
+    ctx.fillText('按"开始游戏"再来一局  ·  TAP START FOR REMATCH',
+      W / 2, H - 60);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  _roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  _spawnConfetti() {
+    const g = this._gomoku;
+    if (g.confetti) {
+      this.group.remove(g.confetti.points);
+      g.confetti.points.geometry.dispose();
+      g.confetti.points.material.dispose();
+    }
+    const N = 240;
+    const positions = new Float32Array(N * 3);
+    const velocities = new Float32Array(N * 3);
+    const colors = new Float32Array(N * 3);
+    const palette = [
+      [1.0, 0.85, 0.36], [1.0, 0.35, 0.42], [0.36, 0.95, 0.55],
+      [0.46, 0.78, 1.00], [1.00, 0.55, 0.95], [0.95, 0.95, 1.00],
+    ];
+    for (let i = 0; i < N; i++) {
+      positions[i * 3]     = (Math.random() - 0.5) * 7;
+      positions[i * 3 + 1] = 4.6 + Math.random() * 1.6;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 7;
+      velocities[i * 3]     = (Math.random() - 0.5) * 0.7;
+      velocities[i * 3 + 1] = -0.7 - Math.random() * 0.9;
+      velocities[i * 3 + 2] = (Math.random() - 0.5) * 0.7;
+      const cp = palette[(Math.random() * palette.length) | 0];
+      colors[i * 3] = cp[0]; colors[i * 3 + 1] = cp[1]; colors[i * 3 + 2] = cp[2];
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
+    const mat = new THREE.PointsMaterial({
+      size: 0.18, vertexColors: true,
+      transparent: true, opacity: 0.95, depthWrite: false,
+    });
+    const points = new THREE.Points(geom, mat);
+    points.renderOrder = 6;
+    this.group.add(points);
+
+    g.confetti = { points, velocities, life: 0, maxLife: 7.5 };
+  }
+
+  _tickConfetti(delta) {
+    const c = this._gomoku?.confetti;
+    if (!c) return;
+    c.life += delta;
+    const pos = c.points.geometry.attributes.position.array;
+    const vel = c.velocities;
+    const N = pos.length / 3;
+    for (let i = 0; i < N; i++) {
+      pos[i * 3]     += vel[i * 3]     * delta;
+      pos[i * 3 + 1] += vel[i * 3 + 1] * delta;
+      pos[i * 3 + 2] += vel[i * 3 + 2] * delta;
+      // Gentle drag + gravity wobble.
+      vel[i * 3 + 1] -= 0.15 * delta;
+      // Recycle once a flake hits the floor.
+      if (pos[i * 3 + 1] < 0.1) {
+        pos[i * 3]     = (Math.random() - 0.5) * 7;
+        pos[i * 3 + 1] = 4.6 + Math.random() * 1.5;
+        pos[i * 3 + 2] = (Math.random() - 0.5) * 7;
+        vel[i * 3 + 1] = -0.7 - Math.random() * 0.9;
+      }
+    }
+    c.points.geometry.attributes.position.needsUpdate = true;
+
+    // Fade confetti out over time so it doesn't loop forever.
+    const fade = Math.max(0, 1 - c.life / c.maxLife);
+    c.points.material.opacity = 0.95 * fade;
+    if (c.life >= c.maxLife) {
+      this.group.remove(c.points);
+      c.points.geometry.dispose();
+      c.points.material.dispose();
+      this._gomoku.confetti = null;
+    }
+  }
+
+  _billboardBanner(camWorld) {
+    const g = this._gomoku;
+    if (!g?.banner || !g.banner.visible || !camWorld) return;
+    // Rotate to face the camera in the XZ plane so text is always legible.
+    const local = this.group.worldToLocal(camWorld.clone());
+    const dx = local.x - g.banner.position.x;
+    const dz = local.z - g.banner.position.z;
+    g.banner.rotation.y = Math.atan2(dx, dz);
   }
 
   // ────────────────────────────────────────────────────────────
@@ -1499,7 +2048,7 @@ class GamesVRRoom extends VRRoom {
     halo.position.set(0, 0, 0.001);
     panel.add(halo);
 
-    // ── Movable button cap (depresses on click) ───────────────
+    // ── Movable button cap (depresses on click) ─────────────��─
     const tex = this._makeButtonTexture(label, sublabel, accentHex);
     const faceMat = new THREE.MeshStandardMaterial({
       color: 0xFFFFFF, map: tex,

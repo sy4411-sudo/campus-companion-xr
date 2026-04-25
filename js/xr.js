@@ -161,10 +161,20 @@ export class XRManager {
       let mesh = hitObj;
       while (mesh && !mesh.userData.onClick) mesh = mesh.parent;
       if (mesh?.userData?.onClick) {
-        // Default haptic kick — handlers can override with a stronger pulse.
-        this.pulseController(ctrl, 0.7, 80);
-        mesh.userData.onClick(mesh, { source: 'xr', controller: ctrl, xr: this });
-        return;
+        const result = mesh.userData.onClick(mesh, {
+          source: 'xr',
+          controller: ctrl,
+          xr: this,
+          point: btnHit.point ? btnHit.point.clone() : null,
+          uv: btnHit.uv ? btnHit.uv.clone() : null,
+          hitObject: hitObj,
+        });
+        // Handlers can return `false` to opt out (e.g. floor-board when no
+        // game is active) and let the trigger fall through to teleport.
+        if (result !== false) {
+          this.pulseController(ctrl, 0.7, 80);
+          return;
+        }
       }
       
       // Check for exit portal
