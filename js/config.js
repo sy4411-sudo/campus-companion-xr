@@ -147,6 +147,16 @@ const AI_COMPANION_PROMPTS = {
   nature: 'A gentle nature spirit companion, round body made of soft leaves and flowers, two small vine hands with flower buds, peaceful smiling face, green and pink pastel colors, floating pollen particles, studio ghibli style, clean background, 3D character model',
 };
 
+// Expose globals so the ES module in main.js can reach this classic script.
+// Top-level `const` in classic scripts is NOT attached to window; we pin the
+// shared constants here explicitly the same way tripo.js does for its client.
+if (typeof window !== 'undefined') {
+  window.CONFIG = CONFIG;
+  window.ZONES = ZONES;
+  window.AVATAR_PROMPTS = AVATAR_PROMPTS;
+  window.AI_COMPANION_PROMPTS = AI_COMPANION_PROMPTS;
+}
+
 // Room furniture prompts for Tripo
 const ROOM_FURNITURE_PROMPTS = {
   // Chat room

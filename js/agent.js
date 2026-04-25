@@ -126,3 +126,6 @@ const Agent = (() => {
 
   return { chat, setZone, setApiKey, getApiKey, clearHistory };
 })();
+
+// Expose globally so the ES module in main.js can reach this classic script.
+if (typeof window !== 'undefined') window.Agent = Agent;

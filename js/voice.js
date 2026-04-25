@@ -57,3 +57,6 @@ const VoiceInput = (() => {
 
   return { supported, init, start, stop, toggle, isListening };
 })();
+
+// Expose globally so the ES module in main.js can reach this classic script.
+if (typeof window !== 'undefined') window.VoiceInput = VoiceInput;
