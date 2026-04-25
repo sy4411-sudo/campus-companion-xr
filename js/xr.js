@@ -61,7 +61,6 @@ export class XRManager {
     this.renderer.xr.addEventListener('sessionstart', () => {
       // In VR, hide all HTML panels
       document.getElementById('chat-panel')?.classList.add('hidden');
-      document.getElementById('game-panel')?.classList.add('hidden');
       document.getElementById('nav-hint')?.classList.add('hidden');
       document.getElementById('top-nav')?.classList.add('hidden');
       document.getElementById('zone-indicator')?.classList.add('hidden');
