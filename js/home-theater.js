@@ -18,15 +18,15 @@
 const HomeTheater = (() => {
   const FEATURED = {
     bilibili: [
-      // Featured BVIDs — chosen for relaxing / 治愈 / 学习 vibes.
-      { title: '4K · 治愈风景', bvid: 'BV1GJ411x7h7' },
-      { title: 'Lo-fi · 学习背景', bvid: 'BV1Cv411k7VV' },
-      { title: '猫咪日常', bvid: 'BV1bL4y1F7Wo' },
+      // Curated film clips — relaxing / 治愈 vibes.
+      { title: '《天空之城》剪辑 · Castle in the Sky',         bvid: 'BV1G64y1q7DZ' },
+      { title: '《心灵捕手》剪辑 · Good Will Hunting',         bvid: 'BV1n44y1S7Zy' },
+      { title: '《绿皮书》剪辑 · Green Book',                  bvid: 'BV1wG41147i7' },
     ],
     youtube: [
-      { title: 'Lofi hip hop · study/relax', vid: 'jfKfPfyJRdk' },
-      { title: 'Synthwave radio · chill/game', vid: '4xDzrJKXOOY' },
-      { title: 'Coffee shop ambience', vid: 'h2zkV-l_TfP4' },
+      { title: 'Paddington · clip',                                    vid: 'EoRYe17lAQ8' },
+      { title: 'Eternal Sunshine of the Spotless Mind · clip',         vid: 'hZdl2FFp0eA' },
+      { title: 'About Time · clip',                                    vid: 'dgMKzky9S4I' },
     ],
   };
 
