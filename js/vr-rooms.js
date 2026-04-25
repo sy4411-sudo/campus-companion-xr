@@ -616,7 +616,7 @@ class ChatVRRoom extends VRRoom {
     return new THREE.CanvasTexture(c);
   }
 
-  // ── 火焰 / 落地灯 flicker ──────������─────────────────────
+  // ── 火焰 / 落地灯 flicker ─────���������─────────────────────
   update(delta, camWorld) {
     super.update(delta, camWorld);
     const t = performance.now() * 0.001;
@@ -1296,49 +1296,53 @@ class GamesVRRoom extends VRRoom {
     // `this.companion.say()` so it appears in the same 3D bubble the
     // chat zone uses, never in the desktop chat panel. Lines are short
     // and bratty/playful to match the Game-Zone systemPrompt.
+    // Every line is bilingual (中文 / English) on two stacked rows so the
+    // bubble reads naturally for both audiences. Inner emphasis uses the
+    // 「 」 brackets — using straight " inside this " - delimited string
+    // would terminate the literal and break parsing.
     this._gomokuLines = {
       greet: [
-        '嘿嘿~我是童童！想下五子棋吗？\n按墙上"开始游戏"，你执黑先手哦。',
-        '欢迎来轻游戏区！\n童童陪你下五子棋——按"开始游戏"开局~',
+        '嘿嘿~我是童童！来下五子棋吗？\nHi! I\'m Tongtong — wanna play gomoku?',
+        '欢迎来轻游戏区！按「开始游戏」开局~\nWelcome! Hit START to begin~',
       ],
       start: [
-        '开局啦！你执黑先手——\n点棋盘上落子吧~',
-        '准备好啦~黑棋你先来！',
-        '童童准备就绪！来吧，看谁更厉害~',
+        '开局啦！你执黑先手~\nGame on! You\'re black, you go first.',
+        '准备好啦~黑棋你先来！\nReady! Black moves first — go!',
+        '童童准备就绪！\nTongtong\'s ready — let\'s go!',
       ],
       playerMove: [
-        '嗯…让我想想~',
-        '哎呀好棋！',
-        '嘿嘿，看我接招！',
-        '这步有意思~',
-        '让童童算一算……',
+        '嗯…让我想想~\nHmm… let me think.',
+        '哎呀好棋！\nNice move!',
+        '嘿嘿，看我接招！\nHeh, watch this!',
+        '这步有意思~\nInteresting move~',
+        '让童童算一算……\nLet me calculate…',
       ],
       playerThreat: [          // player just made an open-3 / four-threat
-        '欸！这步我得堵——',
-        '不行不行，得防一下！',
-        '危险危险~童童得小心了！',
+        '欸！这步我得堵——\nWhoa! Gotta block that!',
+        '不行不行，得防一下！\nNope nope — defending!',
+        '危险危险~童童得小心了！\nDanger! Time to be careful~',
       ],
       aiMove: [
-        '看童童这一手！',
-        '嘿嘿，这里！',
-        '猜猜我下一步~',
-        '哼哼，没那么容易赢哦~',
+        '看童童这一手！\nCheck out my move!',
+        '嘿嘿，这里！\nHeh — right here!',
+        '猜猜我下一步~\nGuess my next move~',
+        '哼哼，没那么容易赢哦~\nNot gonna let you win that easy~',
       ],
       aiThreat: [              // AI just built an open-3 of its own
-        '嘿嘿，童童快连成线啦！',
-        '快了快了——你能挡住吗？',
+        '嘿嘿，童童快连成线啦！\nHeh, almost five in a row!',
+        '快了快了——你能挡住吗？\nAlmost there — can you block me?',
       ],
       playerWin: [
-        '哇！你赢啦！\n再来一局？按"开始游戏"继续~',
-        '太厉害啦！童童认输~\n要不要再来一局？',
+        '哇！你赢啦！再来一局？\nWow, you win! Another round?',
+        '太厉害啦！童童认输~\nAmazing! I give up — rematch?',
       ],
       aiWin: [
-        '这局童童赢啦~ 嘿嘿！\n下次你可以的，按"开始游戏"再来~',
-        '哈哈！童童赢咯~\n再战一局吗？',
+        '这局童童赢啦~ 嘿嘿！\nI win this round — heh heh!',
+        '哈哈！童童赢咯~ 再战一局？\nHaha I won! Wanna try again?',
       ],
       end: [
-        '好的，下次再来一局！',
-        '辛苦啦~随时回来玩~',
+        '好的，下次再来一局！\nOk! Come back for another match~',
+        '辛苦啦~随时回来玩~\nNice game! Drop by anytime~',
       ],
     };
 
@@ -1473,7 +1477,7 @@ class GamesVRRoom extends VRRoom {
     g.lastMarker = ring;
   }
 
-  // ────────────────────────────────────────────────────────────
+  // ──────────────────────────────────────���─────────────────────
   //  Make the giant floor board itself a click target. The handler
   //  is always installed but only does work while a game is active.
   // ────────────────────────────────────────────────────────────
