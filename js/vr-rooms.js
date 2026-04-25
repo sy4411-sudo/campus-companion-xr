@@ -1156,25 +1156,15 @@ class GamesVRRoom extends VRRoom {
   }
 
   build() {
-    this._buildRoom(16, 16, 5, 0x4A4A6A, 0xFFF0E0);
+    // Bespoke arcade-lounge room: walnut wainscot + neon argyle upper
+    // wall + cinema-style spotlight rig over the floor board.
+    this._buildGamesRoom(16, 16, 5);
+
     // Vivid teal-cyan: complementary to the warm tatami-yellow Go board
     // (#E9C28B → #C99A5B) for the highest contrast against the floor,
     // and distinct from the other four zones' companions.
     this._buildAICompanion(2, 0.5, 1, 0x2EC4D8);
     this._buildExitDoor(0, 0, 7);
-    
-    // Colorful party lighting
-    const light1 = new THREE.PointLight(0xFFAA00, 0.6, 12);
-    light1.position.set(-4, 4, 0);
-    this.group.add(light1);
-    
-    const light2 = new THREE.PointLight(0x00AAFF, 0.6, 12);
-    light2.position.set(4, 4, 0);
-    this.group.add(light2);
-    
-    const light3 = new THREE.PointLight(0xFF00AA, 0.4, 12);
-    light3.position.set(0, 4, -4);
-    this.group.add(light3);
     
     // ── Wall-hugging Tripo decorations ───────────────────────────
     // Floor items are pulled away from the walls (x = ±8, z = ±8) by a
@@ -3547,6 +3537,248 @@ class GamesVRRoom extends VRRoom {
       if (p && p.color === attacker && p.type === 'k') return true;
     }
     return false;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  //  Bespoke games-room shell (walls + floor + ceiling + lights).
+  //  Replaces BaseVRRoom._buildRoom with a unified arcade-lounge
+  //  look: deep-plum upper walls with neon argyle, walnut wainscot
+  //  with an amber chair-rail, walnut floor, and a cinematic
+  //  spotlight rig that pools warm light over the floor board.
+  // ════════════════════════════════════════════════════════════
+  _buildGamesRoom(width, depth, height) {
+    this.roomSize = { width, depth, height };
+
+    // ── Floor — dark walnut so the giant board (covers ~72%) reads
+    //   as a deliberately framed centerpiece rather than floating.
+    const floorTex = this._makeArcadeFloorTexture();
+    floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+    floorTex.repeat.set(2, 2);
+    floorTex.colorSpace = THREE.SRGBColorSpace;
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, depth),
+      new THREE.MeshStandardMaterial({
+        map: floorTex, roughness: 0.85, metalness: 0.04,
+      }),
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    this.group.add(floor);
+
+    // ── Walls — shared CanvasTexture, tiled per-wall so the
+    //    pattern reads at consistent human scale on every face.
+    //    The texture is ~4m wide → repeat = (wallWidth / 4, 1).
+    const wallTex = this._makeArcadeWallTexture();
+    const _wrap = (hRepeat) => {
+      const t = wallTex.clone();
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.repeat.set(hRepeat, 1);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.needsUpdate = true;
+      return t;
+    };
+    const mkWall = (planeWidth) => new THREE.Mesh(
+      new THREE.PlaneGeometry(planeWidth, height),
+      new THREE.MeshStandardMaterial({
+        map: _wrap(planeWidth / 4),
+        roughness: 0.92, metalness: 0.05,
+        side: THREE.DoubleSide,
+      }),
+    );
+
+    const back = mkWall(width);
+    back.position.set(0, height / 2, -depth / 2);
+    this.group.add(back);
+
+    const left = mkWall(depth);
+    left.rotation.y = Math.PI / 2;
+    left.position.set(-width / 2, height / 2, 0);
+    this.group.add(left);
+
+    const right = mkWall(depth);
+    right.rotation.y = -Math.PI / 2;
+    right.position.set(width / 2, height / 2, 0);
+    this.group.add(right);
+
+    // ── Ceiling — deep plum so warm spot-pool feels like a stage.
+    const ceiling = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, depth),
+      new THREE.MeshStandardMaterial({
+        color: 0x1A1428, roughness: 0.92, metalness: 0.05,
+      }),
+    );
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.y = height;
+    this.group.add(ceiling);
+
+    // ── Light rig ────────────────────────────────────────────────
+    // 1. HemisphereLight (warm sky / cool floor) for natural fill —
+    //    keeps shadows from going pitch-black without flattening.
+    const hemi = new THREE.HemisphereLight(0xFFD4A8, 0x1F1730, 0.50);
+    this.group.add(hemi);
+
+    // 2. Faint AmbientLight floor — just enough to lift deep shadows.
+    const amb = new THREE.AmbientLight(0xFFFFFF, 0.13);
+    this.group.add(amb);
+
+    // 3. Cinematic SpotLight from the centre of the ceiling, aimed
+    //    straight down at the board. Wide cone + soft penumbra so
+    //    the falloff looks like a real stage / billiards lamp.
+    const spot = new THREE.SpotLight(
+      0xFFEDC9,           // warm cream
+      1.7,                // intensity
+      18,                 // distance
+      Math.PI / 3.4,      // cone half-angle ≈ 53°
+      0.55,               // penumbra (soft edge)
+      1.4,                // decay
+    );
+    spot.position.set(0, height - 0.2, 0);
+    spot.target.position.set(0, 0, 0);
+    this.group.add(spot);
+    this.group.add(spot.target);
+
+    // 4. Three coloured arcade accents tucked in the upper corners.
+    //    Lower intensity than before so the SpotLight stays the hero
+    //    and the chess pieces never get colour-cast into mush.
+    const accents = [
+      { color: 0xFFB04A, pos: [-6.4, height - 0.55, -6.4], i: 0.45 },
+      { color: 0x36C8FF, pos: [ 6.4, height - 0.55, -6.4], i: 0.45 },
+      { color: 0xFF63AA, pos: [ 0,   height - 0.55,  6.4], i: 0.30 },
+    ];
+    for (const a of accents) {
+      const p = new THREE.PointLight(a.color, a.i, 14, 1.7);
+      p.position.set(a.pos[0], a.pos[1], a.pos[2]);
+      this.group.add(p);
+    }
+  }
+
+  // ── Wall CanvasTexture: argyle upper wall + amber chair rail +
+  //    walnut wainscot + thin black skirting. One canvas tiles to
+  //    every wall so the pattern stays consistent.
+  _makeArcadeWallTexture() {
+    const W = 1024, H = 1280;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // ── Top LED hint strip (decorative — real LED is the SpotLight).
+    const top = ctx.createLinearGradient(0, 0, 0, H * 0.04);
+    top.addColorStop(0, '#FFB04A');
+    top.addColorStop(1, '#221932');
+    ctx.fillStyle = top;
+    ctx.fillRect(0, 0, W, H * 0.04);
+
+    // ── Upper wall — deep navy / plum base.
+    ctx.fillStyle = '#171028';
+    ctx.fillRect(0, H * 0.04, W, H * 0.62);
+
+    // Argyle diamond grid in cool cyan, faint enough to not compete
+    // with the floor board for the eye.
+    ctx.strokeStyle = 'rgba(96, 200, 255, 0.16)';
+    ctx.lineWidth = 1.5;
+    const dW = 128, dH = 64;
+    for (let y = H * 0.05; y < H * 0.66; y += dH) {
+      for (let x = -dW / 2; x < W + dW; x += dW) {
+        const off = ((y / dH) | 0) % 2 === 0 ? 0 : dW / 2;
+        ctx.beginPath();
+        ctx.moveTo(x + off,            y + dH / 2);
+        ctx.lineTo(x + off + dW / 2,   y);
+        ctx.lineTo(x + off + dW,       y + dH / 2);
+        ctx.lineTo(x + off + dW / 2,   y + dH);
+        ctx.closePath();
+        ctx.stroke();
+      }
+    }
+
+    // Sparse star-dots so the navy never looks dead.
+    ctx.fillStyle = 'rgba(120, 220, 255, 0.45)';
+    for (let i = 0; i < 60; i++) {
+      const x = Math.random() * W;
+      const y = H * 0.05 + Math.random() * (H * 0.6);
+      ctx.beginPath();
+      ctx.arc(x, y, Math.random() * 1.5 + 0.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ── Chair rail: bright amber neon line + dark shadow band below.
+    ctx.fillStyle = '#FFB04A';
+    ctx.fillRect(0, H * 0.66, W, H * 0.012);
+    ctx.fillStyle = '#3F2810';
+    ctx.fillRect(0, H * 0.672, W, H * 0.028);
+
+    // ── Wainscot — dark walnut planks with vertical seams + grain.
+    const plank = ctx.createLinearGradient(0, H * 0.70, 0, H);
+    plank.addColorStop(0, '#3A2719');
+    plank.addColorStop(1, '#1F1108');
+    ctx.fillStyle = plank;
+    ctx.fillRect(0, H * 0.70, W, H * 0.30);
+
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.lineWidth = 2;
+    for (let x = 0; x <= W; x += 156) {
+      ctx.beginPath();
+      ctx.moveTo(x, H * 0.70);
+      ctx.lineTo(x, H);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(255, 200, 130, 0.045)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 80; i++) {
+      const y = H * 0.70 + Math.random() * H * 0.30;
+      const x = Math.random() * W;
+      const len = 60 + Math.random() * 200;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + len, y + (Math.random() - 0.5) * 4);
+      ctx.stroke();
+    }
+
+    // ── Skirting board.
+    ctx.fillStyle = '#0A0604';
+    ctx.fillRect(0, H * 0.96, W, H * 0.04);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Floor CanvasTexture: dark walnut planks with subtle grain.
+  _makeArcadeFloorTexture() {
+    const W = 512, H = 512;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    const grad = ctx.createLinearGradient(0, 0, W, H);
+    grad.addColorStop(0, '#33231A');
+    grad.addColorStop(1, '#1C1108');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.lineWidth = 1.5;
+    for (let x = 0; x < W; x += 64) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let y = 0; y < H; y += 256) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    ctx.strokeStyle = 'rgba(180, 130, 80, 0.06)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 80; i++) {
+      const x = Math.random() * W, y = Math.random() * H;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + 30 + Math.random() * 50, y);
+      ctx.stroke();
+    }
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
   }
 
   getSpawnPoint() {
