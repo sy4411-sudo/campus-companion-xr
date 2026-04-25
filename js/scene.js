@@ -1077,24 +1077,225 @@ export class CampusScene {
   }
 
   // ── Zone labels ───────────────────────────────────────────
+  // Two label variants:
+  //   _makeZoneLabel  — large floating placard above each zone's
+  //                     furniture cluster (3.2 × 1.4 m plane)
+  //   _makePortalLabel — slim banner mounted on the portal lintel
+  //                      (3.4 × 0.8 m plane)
+  //
+  // Both share a single "elegant lobby plaque" visual language: a
+  // warm cream card with gradient depth, a thin gold pinstripe, a
+  // circular medallion holding the zone's emoji tinted with the
+  // zone's signature colour, and well-spaced serif/sans bilingual
+  // typography. Drawn at 2× pixel density so the type stays crisp
+  // when seen from across the lobby or right at the gate in VR.
   _makeZoneLabel(zone) {
-    // Use a higher-resolution canvas (same 3.2:1.4 aspect) so text stays crisp,
-    // and pass maxWidth to fillText so long names auto-shrink instead of clipping.
-    const w=640,h=280,c=document.createElement('canvas'); c.width=w; c.height=h;
-    const ctx=c.getContext('2d');
-    const pad=24;
-    ctx.fillStyle='rgba(255,248,235,0.92)'; this._rrect(ctx,12,12,w-24,h-24,28); ctx.fill();
-    ctx.strokeStyle='rgba(180,140,80,0.5)'; ctx.lineWidth=4; ctx.stroke();
-    ctx.textAlign='center'; ctx.textBaseline='alphabetic';
-    ctx.fillStyle='#4a3020'; ctx.font='bold 52px "Segoe UI Emoji",Arial';
-    ctx.fillText(`${zone.emoji}  ${zone.name}`, w/2, 110, w-pad*2);
-    ctx.font='40px "Microsoft YaHei",Arial'; ctx.fillStyle='#7a5840';
-    ctx.fillText(zone.nameZh, w/2, 170, w-pad*2);
-    ctx.font='26px Arial'; ctx.fillStyle='#a08060';
-    ctx.fillText('Click to enter · 点击进入', w/2, 220, w-pad*2);
-    const tex=new THREE.CanvasTexture(c); tex.anisotropy=4;
-    const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,depthWrite:false,side:THREE.DoubleSide});
-    return new THREE.Mesh(new THREE.PlaneGeometry(3.2,1.4),mat);
+    const W = 1280, H = 560;                       // 2× the 3.2:1.4 plane
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+
+    const accent = this._zoneCss(zone.color);
+    const accentSoft = this._zoneCss(zone.color, 0.18);
+
+    // Drop-shadow halo behind the card for depth.
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.30)';
+    this._rrect(ctx, 28, 38, W - 56, H - 56, 56); ctx.fill();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0)'; // reset
+
+    // Card body: warm cream → soft amber gradient.
+    const cardX = 24, cardY = 24, cardW = W - 48, cardH = H - 48;
+    const grad = ctx.createLinearGradient(0, cardY, 0, cardY + cardH);
+    grad.addColorStop(0, '#fff8ea');
+    grad.addColorStop(1, '#f3e3c2');
+    ctx.fillStyle = grad;
+    this._rrect(ctx, cardX, cardY, cardW, cardH, 48); ctx.fill();
+
+    // Inner soft accent wash on the left so the card isn't monotone.
+    const wash = ctx.createLinearGradient(cardX, 0, cardX + cardW * 0.55, 0);
+    wash.addColorStop(0, accentSoft);
+    wash.addColorStop(1, 'rgba(255, 248, 234, 0)');
+    ctx.fillStyle = wash;
+    this._rrect(ctx, cardX, cardY, cardW, cardH, 48); ctx.fill();
+
+    // Double pinstripe — outer dark bronze, inner gold.
+    ctx.strokeStyle = 'rgba(60, 36, 18, 0.55)'; ctx.lineWidth = 4;
+    this._rrect(ctx, cardX, cardY, cardW, cardH, 48); ctx.stroke();
+    ctx.strokeStyle = 'rgba(196, 154, 80, 0.95)'; ctx.lineWidth = 2;
+    this._rrect(ctx, cardX + 10, cardY + 10, cardW - 20, cardH - 20, 40); ctx.stroke();
+
+    // Accent stripe down the left edge, in zone colour.
+    ctx.fillStyle = accent;
+    this._rrect(ctx, cardX + 18, cardY + 30, 8, cardH - 60, 4); ctx.fill();
+
+    // Emoji medallion — circle filled with zone-tinted glaze.
+    const medX = cardX + 110, medY = H / 2, medR = 78;
+    const mGrad = ctx.createRadialGradient(medX - 12, medY - 18, 6, medX, medY, medR);
+    mGrad.addColorStop(0, '#ffffff');
+    mGrad.addColorStop(0.55, accentSoft);
+    mGrad.addColorStop(1, accent);
+    ctx.fillStyle = mGrad;
+    ctx.beginPath(); ctx.arc(medX, medY, medR, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(196, 154, 80, 0.9)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(medX, medY, medR, 0, Math.PI * 2); ctx.stroke();
+    ctx.font = '90px "Segoe UI Emoji", Arial';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(zone.emoji, medX, medY + 4);
+
+    // Text column starts after the medallion.
+    const textX = medX + medR + 50;
+    const textRight = cardX + cardW - 50;
+    const textW = textRight - textX;
+    ctx.textAlign = 'left';
+
+    // English headline — serif, deep walnut.
+    ctx.fillStyle = '#3a2010';
+    ctx.font = '700 76px "Georgia", "Times New Roman", serif';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(zone.name, textX, cardY + 170, textW);
+
+    // Chinese sub-headline — clean sans, warm walnut.
+    ctx.fillStyle = '#6e4a26';
+    ctx.font = '500 52px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText(zone.nameZh, textX, cardY + 250, textW);
+
+    // CTA pill — small rounded chip with the zone accent + small dot.
+    const pillY = cardY + 320;
+    const pillH = 60;
+    const pillText = 'Click to enter · 点击进入';
+    ctx.font = '500 30px "Inter", "Helvetica Neue", Arial, sans-serif';
+    const pillW = ctx.measureText(pillText).width + 90;
+    ctx.fillStyle = accent;
+    this._rrect(ctx, textX, pillY, pillW, pillH, pillH / 2); ctx.fill();
+    // Tiny pulsing dot (static here, but visually communicates "live").
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(textX + 28, pillY + pillH / 2, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(pillText, textX + 56, pillY + pillH / 2 + 2);
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    });
+    return new THREE.Mesh(new THREE.PlaneGeometry(3.2, 1.4), mat);
+  }
+
+  _makePortalLabel(zone) {
+    const W = 1360, H = 320;                       // 2× the 3.4:0.8 plane
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+
+    const accent = this._zoneCss(zone.color);
+    const accentSoft = this._zoneCss(zone.color, 0.20);
+
+    // Soft drop-shadow halo for floating effect.
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+    this._rrect(ctx, 22, 30, W - 44, H - 44, 56); ctx.fill();
+
+    // Banner body: warm cream with a horizontal accent gradient.
+    const cardX = 16, cardY = 16, cardW = W - 32, cardH = H - 32;
+    const bodyGrad = ctx.createLinearGradient(cardX, 0, cardX + cardW, 0);
+    bodyGrad.addColorStop(0, accentSoft);
+    bodyGrad.addColorStop(0.45, '#fff5dc');
+    bodyGrad.addColorStop(1, accentSoft);
+    ctx.fillStyle = bodyGrad;
+    this._rrect(ctx, cardX, cardY, cardW, cardH, 50); ctx.fill();
+
+    // Pinstripes: outer bronze, inner gold.
+    ctx.strokeStyle = 'rgba(60, 36, 18, 0.55)'; ctx.lineWidth = 4;
+    this._rrect(ctx, cardX, cardY, cardW, cardH, 50); ctx.stroke();
+    ctx.strokeStyle = 'rgba(196, 154, 80, 0.95)'; ctx.lineWidth = 2;
+    this._rrect(ctx, cardX + 10, cardY + 10, cardW - 20, cardH - 20, 42); ctx.stroke();
+
+    // Tiny ornaments at the two ends of the banner.
+    const drawOrnament = (cx) => {
+      ctx.fillStyle = accent;
+      ctx.beginPath();
+      ctx.arc(cx, H / 2, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(196, 154, 80, 0.9)';
+      ctx.beginPath();
+      ctx.arc(cx + 20, H / 2, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath();
+      ctx.arc(cx - 20, H / 2, 3, 0, Math.PI * 2); ctx.fill();
+    };
+    drawOrnament(cardX + 60);
+    drawOrnament(cardX + cardW - 60);
+
+    // Title — emoji medallion + EN + ZH centred together.
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#3a2010';
+    ctx.font = '700 80px "Georgia", "Times New Roman", serif';
+    const en = zone.name;
+    const zh = zone.nameZh;
+    const sep = '  ·  ';
+    const enW = ctx.measureText(en).width;
+    ctx.font = '500 64px "PingFang SC", "Microsoft YaHei", sans-serif';
+    const zhW = ctx.measureText(zh).width;
+    ctx.font = '500 64px "Inter", Arial';
+    const sepW = ctx.measureText(sep).width;
+    ctx.font = '90px "Segoe UI Emoji", Arial';
+    const emojiW = ctx.measureText(zone.emoji).width;
+
+    const totalW = emojiW + 36 + enW + sepW + zhW;
+    let cursor = (W - totalW) / 2;
+    const cy = H / 2 + 4;
+
+    // Emoji
+    ctx.font = '90px "Segoe UI Emoji", Arial';
+    ctx.fillStyle = accent;
+    ctx.textAlign = 'left';
+    ctx.fillText(zone.emoji, cursor, cy);
+    cursor += emojiW + 36;
+
+    // English in serif
+    ctx.font = '700 80px "Georgia", "Times New Roman", serif';
+    ctx.fillStyle = '#3a2010';
+    ctx.fillText(en, cursor, cy);
+    cursor += enW;
+
+    // Decorative separator
+    ctx.font = '500 64px "Inter", Arial';
+    ctx.fillStyle = 'rgba(196, 154, 80, 0.95)';
+    ctx.fillText(sep, cursor, cy);
+    cursor += sepW;
+
+    // Chinese in clean sans
+    ctx.font = '500 64px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = '#6e4a26';
+    ctx.fillText(zh, cursor, cy);
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    });
+    return new THREE.Mesh(new THREE.PlaneGeometry(3.4, 0.8), mat);
+  }
+
+  // Format a zone color (numeric 0xRRGGBB) as a CSS rgb/rgba string.
+  // The optional alpha lets callers reuse the same value for semi-
+  // transparent washes / gradients without repeating the byte math.
+  _zoneCss(colorInt, alpha) {
+    const r = (colorInt >> 16) & 0xff;
+    const g = (colorInt >> 8) & 0xff;
+    const b = colorInt & 0xff;
+    return alpha === undefined ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},${alpha})`;
+  }
+
+  _rrect(ctx,x,y,w,h,r) {
+    ctx.beginPath(); ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
+    ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r);
+    ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h);
+    ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r);
+    ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
   }
 
   _makePortalLabel(zone) {
