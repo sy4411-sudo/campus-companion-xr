@@ -337,7 +337,25 @@ export const MODELS = {
       'isolated on transparent background',
   },
 
-  // ── AI companion (chat zone) ────────────────────────────────
+  // ── Hub / Lobby curated decorations ───────────────────────
+  // Replace the old plant_tropical (felt out of place in a marble lobby)
+  // with a pair of more refined, hotel-lobby-grade fixtures.
+  marble_urn_vase: {
+    prompt:
+      'a tall ornate ivory marble pedestal urn vase filled with an elegant ' +
+      'bouquet of white roses and eucalyptus, classical fluted base with ' +
+      'soft gold trim, hotel lobby decoration, photorealistic 3D render, ' +
+      'single isolated object on transparent background',
+  },
+  art_deco_floor_lamp: {
+    prompt:
+      'an elegant art deco brass floor lamp with a pleated cream silk shade ' +
+      'glowing warm amber, slender fluted column, weighted round base, ' +
+      'classic luxury hotel lobby fixture, photorealistic 3D render, ' +
+      'single isolated object on transparent background',
+  },
+
+  // ── AI companion (chat zone) ──────────────────────────────
   companion_mascot: {
     prompt:
       'a chubby cute glowing pastel-coral fluffy mascot orb with two big sparkling eyes, ' +
