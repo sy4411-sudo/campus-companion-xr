@@ -109,11 +109,11 @@ export class CampusScene {
   // five gateways visually "own" their light pool and gives the lobby a
   // dim, museum-like atmosphere.
   _initLights() {
-    this.scene.add(new THREE.AmbientLight(0xfff0d8, 0.30));
-    const fill = new THREE.DirectionalLight(0xffe8c8, 0.22);
+    this.scene.add(new THREE.AmbientLight(0xfff0d8, 0.55));
+    const fill = new THREE.DirectionalLight(0xffe8c8, 0.40);
     fill.position.set(8, 18, 8);
     this.scene.add(fill);
-    this.scene.fog = new THREE.FogExp2(0x1a120a, 0.020);
+    this.scene.fog = new THREE.FogExp2(0x1a120a, 0.012);
   }
 
   // ── Floor ─────────────────────────────────────────────────
@@ -210,7 +210,7 @@ export class CampusScene {
     // (yAlign:'center' centres the GLB on lampY, so the bulb cluster sits
     // a touch below centre). Cast shadows so the rod and the fountain
     // edges below it pick up real chandelier-shaped silhouettes.
-    const lamp = new THREE.PointLight(0xFFE0A8, 3.2, 36, 1.4);
+    const lamp = new THREE.PointLight(0xFFE6B4, 5.0, 48, 1.2);
     lamp.position.set(0, lampY - 0.25, 0);
     lamp.castShadow = true;
     lamp.shadow.mapSize.set(512, 512);
@@ -659,7 +659,7 @@ export class CampusScene {
     this.scene.add(this.healingParticles);
   }
 
-  // ── Chat Room (VR Enhanced for 谈心区) ─────────────────────
+  // ── Chat Room (VR Enhanced for ���心区) ─────────────────────
   // NOTE: Chat room is now handled by VRRoomManager in main.js
   // These methods are kept for backward compatibility but are no-ops
   
