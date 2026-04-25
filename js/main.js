@@ -98,6 +98,7 @@ async function boot() {
     playerGroup:  scene.playerGroup,
     floorMesh:    scene.floorMesh,
     portalMeshes: scene.portalMeshes,
+    spawnPoint:   scene.spawnPoint,   // VR rig is pushed here on sessionstart
     onZoneEnter:  handleZoneClick,
     onExitXR:     handleExitXR,
   });

@@ -74,11 +74,20 @@ export class XRManager {
       document.getElementById('nav-hint')?.classList.add('hidden');
       document.getElementById('top-nav')?.classList.add('hidden');
       document.getElementById('zone-indicator')?.classList.add('hidden');
+      // Push the VR rig to the lobby spawn point so the headset user
+      // arrives outside the fountain. The desktop OrbitControls path
+      // requires the rig to remain at origin (parent transforms break
+      // its math), so we only translate it once XR actually starts.
+      const sp = this.spawnPoint;
+      if (sp) this.playerGroup.position.set(sp.x, 0, sp.z);
     });
     this.renderer.xr.addEventListener('sessionend', () => {
       // Restore HTML panels
       document.getElementById('top-nav')?.classList.remove('hidden');
       document.getElementById('nav-hint')?.classList.remove('hidden');
+      // Park the rig back at origin so desktop OrbitControls works
+      // again on exit.
+      this.playerGroup.position.set(0, 0, 0);
       if (this.onExitXR) this.onExitXR();
     });
   }

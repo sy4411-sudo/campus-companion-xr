@@ -114,18 +114,22 @@ export class CampusScene {
     // The fountain occupies a ~5m disc centred on (0,0,0); the inner
     // ring extends out to r=6.5. We arrive at z = +16, facing -Z so
     // the fountain + chandelier are framed dead ahead and the player
-    // is well outside any portal trigger radius.
-    const SPAWN = { x: 0, y: 0, z: 16 };
-    this.spawnPoint = new THREE.Vector3(SPAWN.x, SPAWN.y, SPAWN.z);
+    // is well outside any portal trigger radius. xr.js consumes this
+    // value on `sessionstart` to push the VR rig to the same spot.
+    this.spawnPoint = new THREE.Vector3(0, 0, 16);
 
-    // Desktop start — same arrival spot, but raised a bit so the
-    // overview reads cinematically and OrbitControls can pan freely.
-    this.camera.position.set(SPAWN.x, 6, SPAWN.z);
+    // Desktop start — the camera is a child of playerGroup, but
+    // OrbitControls operates in world space WITHOUT walking the
+    // parent transform, so playerGroup MUST stay at the origin in
+    // desktop mode or mouse-drag orbit math breaks. We therefore put
+    // the camera at the spawn coordinates as its LOCAL position
+    // (which equals world position while playerGroup is at origin).
+    this.camera.position.set(this.spawnPoint.x, 6, this.spawnPoint.z);
     this.camera.lookAt(0, 1.5, 0);
-    // VR start: rig on the floor at the spawn point. With Y rotation
-    // = 0 the headset's default forward is -Z, which already points
-    // at the fountain — so no extra rotation is needed.
-    this.playerGroup.position.set(SPAWN.x, SPAWN.y, SPAWN.z);
+    // VR rig stays at origin until WebXR session starts; xr.js then
+    // moves it to this.spawnPoint on `sessionstart` so the headset
+    // user also lands outside the fountain.
+    this.playerGroup.position.set(0, 0, 0);
   }
 
   // ── Lights ────────────────────────────────────────────────
@@ -1498,9 +1502,15 @@ export class CampusScene {
     const sp = this.spawnPoint || new THREE.Vector3(0, 0, 16);
     const p0=this.camera.position.clone(), p1=new THREE.Vector3(sp.x, 6, sp.z);
     const t0=this.controls.target.clone(), t1=new THREE.Vector3(0, 1.5, 0);
-    // Also pull the VR rig back to the spawn so a headset user
-    // returning home doesn't end up stuck inside the fountain.
-    this.playerGroup.position.set(sp.x, 0, sp.z);
+    // In VR (headset only), pull the rig back to the spawn so the
+    // user doesn't pop out inside the fountain. In desktop mode the
+    // rig MUST stay at origin or OrbitControls' world-space math
+    // breaks (camera is parented to playerGroup).
+    if (this.renderer?.xr?.isPresenting) {
+      this.playerGroup.position.set(sp.x, 0, sp.z);
+    } else {
+      this.playerGroup.position.set(0, 0, 0);
+    }
     let f=0;
     const ease=t=>t<0.5?2*t*t:-1+(4-2*t)*t;
     const fly=()=>{ f++; if(f>60) return; const k=ease(f/60); this.camera.position.lerpVectors(p0,p1,k); this.controls.target.lerpVectors(t0,t1,k); this.controls.update(); requestAnimationFrame(fly); };
