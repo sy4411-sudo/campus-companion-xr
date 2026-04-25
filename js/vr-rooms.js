@@ -1291,6 +1291,37 @@ class GamesVRRoom extends VRRoom {
     this._buildGomokuAssets();
     this._enableBoardClick();
 
+    // ── Chess game state container ──────────────────────────────
+    // Chess shares the same floor slab as gomoku — only the texture
+    // and click semantics change. The 8×8 grid is laid out by the
+    // chess board art:  margin = 5%  →  inner = 90%  →  cell = inner/8.
+    const chessMargin = sideLen * 0.05;
+    const chessInner  = sideLen - 2 * chessMargin;
+    const chessCell   = chessInner / 8;
+    this._chess = {
+      sideLen,
+      margin: chessMargin,
+      inner: chessInner,
+      cell: chessCell,
+      active: false,
+      turn: null,                     // 'white' | 'black' | null
+      board: null,                    // 8×8 of {type:'p|n|b|r|q|k', color}
+      pieceMeshes: null,              // 8×8 of THREE.Group (or null)
+      selected: null,                 // {r,c} of currently picked piece
+      validMoves: null,               // [{from,to,captured?,promotion?}]
+      thinking: false,
+      anims: [],                      // active piece animations
+      piecesGroup: null,
+      highlightGroup: null,
+      aiCursor: null,
+      aiCursorState: 'hidden',        // 'hidden' | 'fadeIn' | 'visible' | 'fadeOut'
+      // Asset cache (filled by _buildChessAssets):
+      pieceFactories: null,
+      whiteMat: null, blackMat: null,
+      whiteAccent: null, blackAccent: null,
+    };
+    this._buildChessAssets();
+
     // ── Companion personality (童童 / Tongtong) ─────────────────
     // Speech-bubble lines only — every utterance goes through
     // `this.companion.say()` so it appears in the same 3D bubble the
@@ -1346,6 +1377,57 @@ class GamesVRRoom extends VRRoom {
       ],
     };
 
+    // Chess-specific lines (用 _say 时按 _boardMode 自动切换台词池)。
+    this._chessLines = {
+      greet: [
+        '想下国际象棋吗？\nWanna play some chess?',
+        '童童陪你来一局国际象棋~\nLet me play chess with you!',
+      ],
+      start: [
+        '开局啦！你执白先手~\nGame on! You\'re white, you go first.',
+        '白棋你先来！加油~\nWhite moves first! Good luck~',
+      ],
+      playerMove: [
+        '嗯…让我想想~\nHmm… let me think.',
+        '哎呀好棋！\nNice move!',
+        '这步不错~\nNot bad~',
+        '让童童算算……\nLet me calculate…',
+      ],
+      playerCapture: [
+        '欸！你吃了我一颗~\nYou took my piece!',
+        '哼哼，等我反击！\nHmph, I\'ll get you back!',
+      ],
+      check: [
+        '哎呀，将军！我得救国王~\nUh oh, check! I gotta save my king~',
+        '童童被将军啦！\nI\'m in check!',
+      ],
+      aiMove: [
+        '看童童这一手！\nCheck out my move!',
+        '嘿嘿，到这里~\nHeh, right here.',
+        '没那么容易赢哦~\nNot gonna let you win that easy~',
+      ],
+      aiCapture: [
+        '童童吃啦！\nGotcha!',
+        '嘿嘿，这子归我了~\nThis piece is mine now~',
+      ],
+      aiCheck: [
+        '将军！\nCheck!',
+        '嘿嘿，将军啦~ 接招~\nCheck~ defend yourself!',
+      ],
+      playerWin: [
+        '哇！将死啦！你赢了！\nCheckmate! You won!',
+        '太厉害啦！童童认输~\nAmazing! I give up — rematch?',
+      ],
+      aiWin: [
+        '将死~ 童童赢咯！\nCheckmate! I win this time~',
+        '哈哈，再来一局？\nHaha, wanna play again?',
+      ],
+      end: [
+        '好的，下次再来一局！\nOk! Come back for another match~',
+        '辛苦啦~随时回来玩~\nNice game! Drop by anytime~',
+      ],
+    };
+
     this.onReady();
   }
 
@@ -1355,17 +1437,20 @@ class GamesVRRoom extends VRRoom {
     // Slight delay so the bubble appears after the camera has settled.
     setTimeout(() => {
       // Don't talk over an active match — only greet when idle.
-      if (!this._gomoku?.active) this._say('greet');
+      if (this._gomoku?.active || this._chess?.active) return;
+      this._say('greet');
     }, 700);
   }
 
   // ────────────────────────────────────────────────────────────
-  //  Update hook — animate confetti / billboard victory banner.
+  //  Update hook — animate confetti / banner / chess pieces.
   // ────────────────────────────────────────────────────────────
   update(delta, camWorld) {
     super.update(delta, camWorld);
     this._tickConfetti(delta);
     this._billboardBanner(camWorld);
+    this._tickChessAnimations(delta);
+    this._tickAICursor(delta);
   }
 
   // ────────────────────────────────────────────────────────────
@@ -1377,13 +1462,27 @@ class GamesVRRoom extends VRRoom {
   // ALL in-game chatter goes through this so nothing leaks into the
   // desktop chat panel.
   _say(category) {
-    const pool = this._gomokuLines?.[category];
+    // Dispatch lines pool by current floor-board mode so 童童 always
+    // says the right thing for whichever game is running.
+    const lines = this._boardMode === 'chess' ? this._chessLines : this._gomokuLines;
+    const pool = lines?.[category];
     if (!pool || !this.companion?.say) return;
     const text = pool[(Math.random() * pool.length) | 0];
     this.companion.say(text);
   }
 
+  // The wall START / END buttons feed both gomoku and chess; we route
+  // by the currently selected board mode.
   _startGame() {
+    if (this._boardMode === 'chess') return this._startChessGame();
+    return this._startGomokuGame();
+  }
+  _endGame() {
+    if (this._boardMode === 'chess') return this._endChessGame();
+    return this._endGomokuGame();
+  }
+
+  _startGomokuGame() {
     const g = this._gomoku;
     // Always restart cleanly — pressing START mid-game resets the position.
     this._clearStones();
@@ -1402,7 +1501,7 @@ class GamesVRRoom extends VRRoom {
     this._say('start');
   }
 
-  _endGame() {
+  _endGomokuGame() {
     const g = this._gomoku;
     g.active = false;
     g.turn = null;
@@ -1489,12 +1588,17 @@ class GamesVRRoom extends VRRoom {
   }
 
   _handleBoardClick(ctx) {
-    const g = this._gomoku;
+    if (!ctx?.point) return false;
     // Returning `false` lets XR / desktop continue to the next handler
     // (teleport for VR, or zone navigation for desktop) so the giant
     // floor board never blocks normal locomotion when no game is on.
+    if (this._boardMode === 'chess') return this._handleChessClick(ctx);
+    return this._handleGomokuClick(ctx);
+  }
+
+  _handleGomokuClick(ctx) {
+    const g = this._gomoku;
     if (!g.active || g.turn !== 'player' || g.thinking) return false;
-    if (!ctx?.point) return false;
 
     // Convert world hit point → room-local board coords. The board top
     // sits centred at room-local origin in x,z, so this is a direct
@@ -2008,6 +2112,27 @@ class GamesVRRoom extends VRRoom {
   _setBoardMode(mode) {
     if (!this._boardTopMesh || !this._boardTextures?.[mode]) return;
     if (this._boardMode === mode) return;
+
+    // Switching boards mid-match aborts the old game so pieces / stones
+    // from a different ruleset never linger on the floor texture.
+    if (this._gomoku?.active) {
+      this._gomoku.active = false;
+      this._gomoku.turn = null;
+      this._gomoku.board = null;
+      this._gomoku.thinking = false;
+      this._clearStones();
+      this._hideVictoryBanner();
+    }
+    if (this._chess?.active) {
+      this._chess.active = false;
+      this._chess.turn = null;
+      this._chess.thinking = false;
+      this._clearChessPieces();
+      this._clearChessHighlights();
+      this._hideAICursor();
+      this._hideVictoryBanner();
+    }
+
     this._boardMode = mode;
     this._boardTopMesh.material.map = this._boardTextures[mode];
     this._boardTopMesh.material.needsUpdate = true;
@@ -2420,6 +2545,987 @@ class GamesVRRoom extends VRRoom {
     tex.anisotropy = 8;
     tex.needsUpdate = true;
     return tex;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  //  CHESS — full implementation, modeled after Windows 3D Chess.
+  //  Player plays white (closer to the camera at z = +) and moves
+  //  first; AI plays black at z = -. All piece geometries and
+  //  materials are created once in `_buildChessAssets()` and cloned
+  //  per-piece so first move is responsive (no run-time alloc).
+  // ════════════════════════════════════════════════════════════
+
+  // ── Asset prep: lathe-based bodies + composite tops ────────
+  _buildChessAssets() {
+    const c = this._chess;
+
+    // Materials. The board art is cream + walnut, so pieces use a
+    // slightly off-white marble and a deep onyx — both with a touch of
+    // metalness so they catch the room's neon lights nicely.
+    c.whiteMat = new THREE.MeshStandardMaterial({
+      color: 0xF1E5C7, roughness: 0.35, metalness: 0.18,
+    });
+    c.blackMat = new THREE.MeshStandardMaterial({
+      color: 0x1A1310, roughness: 0.32, metalness: 0.22,
+    });
+    // Subtle accent bands on collars / crowns so silhouettes pop.
+    c.whiteAccent = new THREE.MeshStandardMaterial({
+      color: 0xC8B388, roughness: 0.5, metalness: 0.3,
+    });
+    c.blackAccent = new THREE.MeshStandardMaterial({
+      color: 0x2A2018, roughness: 0.5, metalness: 0.3,
+    });
+
+    // Build piece factory closures. Each factory builds a Group with
+    // base at local y = 0 so it can be positioned with just an x/z
+    // offset on the slab top.
+    c.pieceFactories = {
+      p: (color) => this._buildPawnMesh(color),
+      r: (color) => this._buildRookMesh(color),
+      n: (color) => this._buildKnightMesh(color),
+      b: (color) => this._buildBishopMesh(color),
+      q: (color) => this._buildQueenMesh(color),
+      k: (color) => this._buildKingMesh(color),
+    };
+
+    // Container groups so we can clear all pieces / highlights cleanly.
+    c.piecesGroup = new THREE.Group();
+    c.highlightGroup = new THREE.Group();
+    this.group.add(c.piecesGroup);
+    this.group.add(c.highlightGroup);
+
+    // AI "cursor" — a downward chevron with a glowing ring that
+    // hovers over the board to telegraph where 童童 is moving.
+    c.aiCursor = this._buildAICursor();
+    c.aiCursor.visible = false;
+    this.group.add(c.aiCursor);
+
+    // Pre-build one of every piece type so geometry caches are warm.
+    // We discard the meshes immediately — what matters is the buffer
+    // upload to the GPU on first paint.
+    for (const t of ['p', 'r', 'n', 'b', 'q', 'k']) {
+      const warm = c.pieceFactories[t]('white');
+      warm.position.set(0, -10, 0);             // off-screen
+      this.group.add(warm);
+      this.group.remove(warm);
+    }
+  }
+
+  _matFor(color) {
+    return color === 'white' ? this._chess.whiteMat : this._chess.blackMat;
+  }
+  _accentFor(color) {
+    return color === 'white' ? this._chess.whiteAccent : this._chess.blackAccent;
+  }
+
+  // Common pedestal — wide ring at the bottom that all pieces share.
+  // Returns a list of Vector2 points usable as the start of a lathe profile.
+  _chessPedestalPoints(topR, neckY) {
+    return [
+      new THREE.Vector2(0.001, 0),
+      new THREE.Vector2(0.30,  0),
+      new THREE.Vector2(0.32,  0.012),
+      new THREE.Vector2(0.30,  0.04),
+      new THREE.Vector2(0.22,  0.06),
+      new THREE.Vector2(topR,  neckY),
+    ];
+  }
+
+  _buildPawnMesh(color) {
+    const profile = [
+      ...this._chessPedestalPoints(0.13, 0.10),
+      new THREE.Vector2(0.13, 0.18),
+      new THREE.Vector2(0.16, 0.22),  // collar
+      new THREE.Vector2(0.10, 0.25),
+      new THREE.Vector2(0.14, 0.28),  // head base
+      new THREE.Vector2(0.14, 0.34),
+      new THREE.Vector2(0.10, 0.40),
+      new THREE.Vector2(0.001, 0.42),
+    ];
+    const geo = new THREE.LatheGeometry(profile, 28);
+    return this._wrapPiece(new THREE.Mesh(geo, this._matFor(color)));
+  }
+
+  _buildRookMesh(color) {
+    const profile = [
+      ...this._chessPedestalPoints(0.18, 0.10),
+      new THREE.Vector2(0.18, 0.30),
+      new THREE.Vector2(0.21, 0.34),  // shoulder
+      new THREE.Vector2(0.21, 0.40),  // top edge
+      new THREE.Vector2(0.001, 0.40), // close top
+    ];
+    const geo = new THREE.LatheGeometry(profile, 28);
+    const grp = new THREE.Group();
+    grp.add(new THREE.Mesh(geo, this._matFor(color)));
+
+    // 4 crenellation notches around the top: stand 4 small cubes on
+    // the rim with 90° gaps so the "battlements" silhouette reads.
+    const battle = new THREE.BoxGeometry(0.10, 0.10, 0.10);
+    const battleMat = this._accentFor(color);
+    for (let i = 0; i < 4; i++) {
+      const a = (i * Math.PI) / 2;
+      const m = new THREE.Mesh(battle, battleMat);
+      m.position.set(Math.cos(a) * 0.16, 0.45, Math.sin(a) * 0.16);
+      grp.add(m);
+    }
+    return this._wrapPiece(grp);
+  }
+
+  _buildBishopMesh(color) {
+    const profile = [
+      ...this._chessPedestalPoints(0.15, 0.10),
+      new THREE.Vector2(0.13, 0.20),
+      new THREE.Vector2(0.16, 0.26),  // collar bulge
+      new THREE.Vector2(0.10, 0.30),
+      new THREE.Vector2(0.13, 0.40),  // body
+      new THREE.Vector2(0.05, 0.50),  // mitre taper
+      new THREE.Vector2(0.07, 0.55),  // tip ball
+      new THREE.Vector2(0.001, 0.60),
+    ];
+    const geo = new THREE.LatheGeometry(profile, 28);
+    const grp = new THREE.Group();
+    grp.add(new THREE.Mesh(geo, this._matFor(color)));
+
+    // The classic mitre slit — a thin black box across the top.
+    const slit = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 0.02, 0.04),
+      this._accentFor(color),
+    );
+    slit.position.set(0, 0.46, 0);
+    grp.add(slit);
+    return this._wrapPiece(grp);
+  }
+
+  _buildQueenMesh(color) {
+    const profile = [
+      ...this._chessPedestalPoints(0.17, 0.10),
+      new THREE.Vector2(0.15, 0.22),
+      new THREE.Vector2(0.19, 0.30),  // collar
+      new THREE.Vector2(0.13, 0.36),
+      new THREE.Vector2(0.17, 0.50),  // body
+      new THREE.Vector2(0.21, 0.58),  // crown base disk
+      new THREE.Vector2(0.21, 0.62),
+      new THREE.Vector2(0.001, 0.62),
+    ];
+    const geo = new THREE.LatheGeometry(profile, 32);
+    const grp = new THREE.Group();
+    grp.add(new THREE.Mesh(geo, this._matFor(color)));
+
+    // 8 small spheres ringing the crown rim.
+    const pearl = new THREE.SphereGeometry(0.038, 12, 8);
+    const pearlMat = this._accentFor(color);
+    for (let i = 0; i < 8; i++) {
+      const a = (i * Math.PI * 2) / 8;
+      const m = new THREE.Mesh(pearl, pearlMat);
+      m.position.set(Math.cos(a) * 0.18, 0.66, Math.sin(a) * 0.18);
+      grp.add(m);
+    }
+    // Central spire pearl
+    const top = new THREE.Mesh(new THREE.SphereGeometry(0.05, 14, 10), pearlMat);
+    top.position.set(0, 0.69, 0);
+    grp.add(top);
+    return this._wrapPiece(grp);
+  }
+
+  _buildKingMesh(color) {
+    const profile = [
+      ...this._chessPedestalPoints(0.18, 0.10),
+      new THREE.Vector2(0.16, 0.22),
+      new THREE.Vector2(0.20, 0.30),  // collar
+      new THREE.Vector2(0.14, 0.36),
+      new THREE.Vector2(0.18, 0.55),  // body
+      new THREE.Vector2(0.22, 0.62),  // crown base
+      new THREE.Vector2(0.22, 0.66),
+      new THREE.Vector2(0.001, 0.66),
+    ];
+    const geo = new THREE.LatheGeometry(profile, 32);
+    const grp = new THREE.Group();
+    grp.add(new THREE.Mesh(geo, this._matFor(color)));
+
+    // Cross on top — 2 thin boxes.
+    const accent = this._accentFor(color);
+    const vert = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.20, 0.05), accent);
+    vert.position.set(0, 0.78, 0);
+    grp.add(vert);
+    const horiz = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.05, 0.05), accent);
+    horiz.position.set(0, 0.80, 0);
+    grp.add(horiz);
+    return this._wrapPiece(grp);
+  }
+
+  _buildKnightMesh(color) {
+    // Lathed pedestal so the base matches every other piece.
+    const baseProfile = [
+      ...this._chessPedestalPoints(0.17, 0.10),
+      new THREE.Vector2(0.18, 0.18),
+      new THREE.Vector2(0.001, 0.18),
+    ];
+    const baseGeo = new THREE.LatheGeometry(baseProfile, 28);
+    const grp = new THREE.Group();
+    grp.add(new THREE.Mesh(baseGeo, this._matFor(color)));
+
+    // Stylised horse-head silhouette extruded along z. Built in xy
+    // with the snout pointing -x; we orient pieces by rotating the
+    // group later so white/black both face their opponent.
+    const s = new THREE.Shape();
+    s.moveTo( 0.20, 0.18);    // start at back-bottom of head
+    s.lineTo(-0.10, 0.18);    // front-bottom (under chest)
+    s.lineTo(-0.18, 0.26);    // throat
+    s.lineTo(-0.22, 0.36);    // chin
+    s.lineTo(-0.20, 0.42);    // mouth
+    s.lineTo(-0.10, 0.46);    // nose bridge
+    s.lineTo(-0.04, 0.54);    // forehead
+    s.lineTo( 0.00, 0.62);    // forward ear tip
+    s.lineTo( 0.06, 0.54);    // dip between ears
+    s.lineTo( 0.10, 0.60);    // back ear tip
+    s.lineTo( 0.16, 0.54);    // back of head
+    s.lineTo( 0.20, 0.30);    // mane back curve
+    s.lineTo( 0.20, 0.18);    // close
+    const headGeo = new THREE.ExtrudeGeometry(s, {
+      depth: 0.18, bevelEnabled: true,
+      bevelThickness: 0.012, bevelSize: 0.012, bevelSegments: 2,
+    });
+    headGeo.translate(0, 0, -0.09);   // centre on z-axis
+    const head = new THREE.Mesh(headGeo, this._matFor(color));
+    grp.add(head);
+
+    // Tiny eye dot for character.
+    const eye = new THREE.Mesh(
+      new THREE.SphereGeometry(0.018, 8, 6),
+      this._accentFor(color === 'white' ? 'black' : 'white'),
+    );
+    eye.position.set(-0.10, 0.40, 0.10);
+    grp.add(eye);
+    const eye2 = eye.clone();
+    eye2.position.z = -0.10;
+    grp.add(eye2);
+
+    return this._wrapPiece(grp);
+  }
+
+  // Wrap any mesh / group in a "carrier" Group whose origin is at the
+  // square centre. This lets us animate position/lift uniformly and
+  // also rotate knights to face the opponent without touching geometry.
+  _wrapPiece(child) {
+    const carrier = new THREE.Group();
+    carrier.add(child);
+    return carrier;
+  }
+
+  // ── AI cursor: a glowing chevron + ring above a target square ──
+  _buildAICursor() {
+    const grp = new THREE.Group();
+
+    // Bright translucent ring.
+    const ringGeo = new THREE.RingGeometry(0.55, 0.72, 36);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xFF6B7A, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.0, depthWrite: false,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.075;
+    ring.renderOrder = 4;
+    grp.add(ring);
+
+    // Downward-pointing chevron (a small cone) hovering above the square.
+    const chevGeo = new THREE.ConeGeometry(0.15, 0.30, 12);
+    const chevMat = new THREE.MeshBasicMaterial({
+      color: 0xFF6B7A, transparent: true, opacity: 0.0, depthWrite: false,
+    });
+    const chev = new THREE.Mesh(chevGeo, chevMat);
+    chev.rotation.x = Math.PI;          // tip points -y
+    chev.position.y = 0.95;             // hovers ~0.3m above tallest pieces
+    chev.renderOrder = 4;
+    grp.add(chev);
+
+    grp.userData = { ring, chev, ringMat, chevMat };
+    return grp;
+  }
+
+  _setAICursorOpacity(o) {
+    const u = this._chess.aiCursor?.userData;
+    if (!u) return;
+    u.ringMat.opacity = o * 0.9;
+    u.chevMat.opacity = o;
+  }
+
+  _hideAICursor() {
+    const c = this._chess;
+    if (!c.aiCursor) return;
+    c.aiCursor.visible = false;
+    this._setAICursorOpacity(0);
+    c.aiCursorState = 'hidden';
+    c.aiCursorAnim = null;
+  }
+
+  _tickAICursor(delta) {
+    const c = this._chess;
+    if (!c.aiCursor || c.aiCursorState === 'hidden') return;
+    // Gentle bob so the chevron looks alive even when idle.
+    const t = (performance.now() % 1200) / 1200;
+    c.aiCursor.userData.chev.position.y = 0.95 + Math.sin(t * Math.PI * 2) * 0.04;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Coordinate helpers
+  // ────────────────────────────────────────────────────────────
+  _chessSquareCentre(r, c) {
+    const ch = this._chess;
+    const half = ch.inner / 2;
+    const x = -half + ch.cell * (c + 0.5);
+    const z = -half + ch.cell * (r + 0.5);
+    return { x, z };
+  }
+  _chessSquareFromPoint(localPoint) {
+    const ch = this._chess;
+    const half = ch.inner / 2;
+    const c = Math.floor((localPoint.x + half) / ch.cell);
+    const r = Math.floor((localPoint.z + half) / ch.cell);
+    if (r < 0 || r >= 8 || c < 0 || c >= 8) return null;
+    return { r, c };
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Game lifecycle
+  // ────────────────────────────────────────────────────────────
+  _startChessGame() {
+    const ch = this._chess;
+    this._setBoardMode('chess');
+    this._clearChessPieces();
+    this._clearChessHighlights();
+    this._hideAICursor();
+    this._hideVictoryBanner();
+
+    // Standard chess starting position. White at rows 6 (pawns) & 7
+    // (majors); black at rows 0 & 1. Player ALWAYS plays white.
+    const back = ['r','n','b','q','k','b','n','r'];
+    ch.board = Array.from({ length: 8 }, () => Array(8).fill(null));
+    ch.pieceMeshes = Array.from({ length: 8 }, () => Array(8).fill(null));
+    for (let c = 0; c < 8; c++) {
+      this._placeChessPiece(0, c, { type: back[c], color: 'black' });
+      this._placeChessPiece(1, c, { type: 'p',     color: 'black' });
+      this._placeChessPiece(6, c, { type: 'p',     color: 'white' });
+      this._placeChessPiece(7, c, { type: back[c], color: 'white' });
+    }
+
+    ch.active = true;
+    ch.turn = 'white';
+    ch.thinking = false;
+    ch.selected = null;
+    ch.validMoves = null;
+    ch.anims.length = 0;
+
+    if (this.companion) this.companion.setExpression('happy');
+    this._say('start');
+  }
+
+  _endChessGame() {
+    const ch = this._chess;
+    ch.active = false;
+    ch.turn = null;
+    ch.thinking = false;
+    ch.selected = null;
+    ch.validMoves = null;
+    ch.anims.length = 0;
+    this._clearChessPieces();
+    this._clearChessHighlights();
+    this._hideAICursor();
+    this._hideVictoryBanner();
+    if (this.companion) this.companion.setExpression('idle');
+    this._say('end');
+  }
+
+  // Place a piece in both the logical board and the 3D scene.
+  _placeChessPiece(r, c, piece) {
+    const ch = this._chess;
+    ch.board[r][c] = piece;
+    const factory = ch.pieceFactories[piece.type];
+    const mesh = factory(piece.color);
+    const { x, z } = this._chessSquareCentre(r, c);
+    // Slab top sits at y = 0.07; pedestal bases at local y = 0, so 0.073
+    // gives a 3 mm clearance to avoid z-fighting with the texture plane.
+    mesh.position.set(x, 0.073, z);
+    // Knights face their opponent. White faces -z (toward row 0),
+    // black faces +z (toward row 7). The shape's snout points -x, so
+    // we rotate +PI/2 (white) or -PI/2 (black) around y.
+    if (piece.type === 'n') {
+      mesh.rotation.y = piece.color === 'white' ? Math.PI / 2 : -Math.PI / 2;
+    }
+    ch.piecesGroup.add(mesh);
+    ch.pieceMeshes[r][c] = mesh;
+  }
+
+  _clearChessPieces() {
+    const ch = this._chess;
+    if (!ch.piecesGroup) return;
+    while (ch.piecesGroup.children.length) {
+      ch.piecesGroup.remove(ch.piecesGroup.children[0]);
+    }
+    if (ch.pieceMeshes) {
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) ch.pieceMeshes[r][c] = null;
+    }
+  }
+
+  _clearChessHighlights() {
+    const ch = this._chess;
+    if (!ch.highlightGroup) return;
+    while (ch.highlightGroup.children.length) {
+      const m = ch.highlightGroup.children[0];
+      ch.highlightGroup.remove(m);
+      m.geometry?.dispose?.();
+      m.material?.dispose?.();
+    }
+  }
+
+  // Add a translucent square overlay (selected = green, valid = yellow,
+  // capturable = red).
+  _addSquareHighlight(r, c, color, opacity = 0.45) {
+    const ch = this._chess;
+    const { x, z } = this._chessSquareCentre(r, c);
+    const w = ch.cell * 0.92;
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, w),
+      new THREE.MeshBasicMaterial({
+        color, transparent: true, opacity,
+        depthWrite: false, side: THREE.DoubleSide,
+      }),
+    );
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(x, 0.0735, z);
+    mesh.renderOrder = 3;
+    ch.highlightGroup.add(mesh);
+  }
+
+  _showSelection(r, c, validMoves) {
+    this._clearChessHighlights();
+    this._addSquareHighlight(r, c, 0x35E07A, 0.55);
+    for (const m of validMoves) {
+      const tgtPiece = this._chess.board[m.to.r][m.to.c];
+      const colour = tgtPiece ? 0xFF5566 : 0xFFD86B;
+      this._addSquareHighlight(m.to.r, m.to.c, colour, 0.45);
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Click handling — Windows-3D-Chess style 2-tap selection.
+  // ────────────────────────────────────────────────────────────
+  _handleChessClick(ctx) {
+    const ch = this._chess;
+    if (!ch.active || ch.thinking || ch.anims.length > 0) return false;
+    if (ch.turn !== 'white') return false;
+
+    const local = this.group.worldToLocal(ctx.point.clone());
+    const sq = this._chessSquareFromPoint(local);
+    if (!sq) return false;
+
+    const piece = ch.board[sq.r][sq.c];
+
+    // Phase 1 — pick a piece. If we already have one selected, the
+    // click is interpreted as an attempted move (or a re-select).
+    if (ch.selected) {
+      const matchedMove = ch.validMoves?.find(
+        m => m.to.r === sq.r && m.to.c === sq.c,
+      );
+      if (matchedMove) {
+        this._clearChessHighlights();
+        ch.selected = null;
+        ch.validMoves = null;
+        this._executePlayerMove(matchedMove);
+        return;
+      }
+      // Re-select if the click landed on another own piece.
+      if (piece && piece.color === 'white') {
+        this._selectAt(sq.r, sq.c);
+        return;
+      }
+      // Otherwise treat as deselect.
+      this._clearChessHighlights();
+      ch.selected = null;
+      ch.validMoves = null;
+      return;
+    }
+
+    // No selection yet. Only pick own pieces; let other clicks fall
+    // through (so VR teleport on empty squares still works).
+    if (!piece || piece.color !== 'white') return false;
+    this._selectAt(sq.r, sq.c);
+  }
+
+  _selectAt(r, c) {
+    const ch = this._chess;
+    const moves = this._chessLegalMoves(ch.board, 'white').filter(
+      m => m.from.r === r && m.from.c === c,
+    );
+    if (!moves.length) {
+      // No legal moves → flash a dim red highlight as feedback.
+      this._clearChessHighlights();
+      this._addSquareHighlight(r, c, 0xFF5566, 0.5);
+      setTimeout(() => {
+        if (this._chess.selected === null) this._clearChessHighlights();
+      }, 600);
+      return;
+    }
+    ch.selected = { r, c };
+    ch.validMoves = moves;
+    this._showSelection(r, c, moves);
+  }
+
+  // Apply a player move: animate piece, capture, check for end, hand off to AI.
+  _executePlayerMove(move) {
+    const ch = this._chess;
+    this._applyMoveToBoard(move);
+    this._animateMove(move, () => {
+      // Reactions: capture / check / win.
+      const opp = 'black';
+      const oppKing = this._chessFindKing(ch.board, opp);
+      const oppInCheck = oppKing && this._chessIsAttacked(ch.board, oppKing.r, oppKing.c, 'white');
+      const oppMoves = this._chessLegalMoves(ch.board, opp);
+      if (oppMoves.length === 0) {
+        if (oppInCheck) {
+          this._onWin('player');
+        } else {
+          // Stalemate — treat as a draw, but still end the match.
+          this._onWin('player');     // banner-only outcome; rare anyway
+        }
+        return;
+      }
+      if (move.captured) this._say('playerCapture');
+      else if (oppInCheck) this._say('check');
+      else if (Math.random() < 0.45) this._say('playerMove');
+
+      ch.turn = 'black';
+      ch.thinking = true;
+      if (this.companion) this.companion.setExpression('thinking');
+      // Slight think delay so the AI feels deliberate.
+      setTimeout(() => this._chessAITurn(), 550);
+    });
+  }
+
+  _applyMoveToBoard(move) {
+    const ch = this._chess;
+    const piece = ch.board[move.from.r][move.from.c];
+    const finalType = move.promotion || piece.type;
+    ch.board[move.from.r][move.from.c] = null;
+    ch.board[move.to.r][move.to.c] = { type: finalType, color: piece.color };
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Animations: piece move (player or AI), with optional AI cursor.
+  //  All animations advance in `_tickChessAnimations(delta)`.
+  // ────────────────────────────────────────────────────────────
+  _animateMove(move, onComplete, opts = {}) {
+    const ch = this._chess;
+    const fromMesh = ch.pieceMeshes[move.from.r][move.from.c];
+    const toCapture = ch.pieceMeshes[move.to.r][move.to.c];
+
+    if (!fromMesh) { onComplete?.(); return; }
+
+    const start = fromMesh.position.clone();
+    const end = this._chessSquareCentre(move.to.r, move.to.c);
+    const endVec = new THREE.Vector3(end.x, 0.073, end.z);
+
+    // Capture: have the captured piece sink + fade then disappear.
+    if (toCapture) {
+      this._animateCapture(toCapture);
+    }
+
+    // Update the mesh-grid bookkeeping immediately. The mesh is the
+    // same instance that started at `move.from` — we just retag it.
+    ch.pieceMeshes[move.from.r][move.from.c] = null;
+    ch.pieceMeshes[move.to.r][move.to.c] = fromMesh;
+
+    // Promotions: swap the mesh for the promoted piece's mesh once
+    // the move animation completes (clean visual transition).
+    const promotion = move.promotion;
+    const colorOfMover = ch.board[move.to.r][move.to.c].color;
+
+    ch.anims.push({
+      kind: 'piece',
+      mesh: fromMesh,
+      from: start,
+      to: endVec,
+      arc: 0.45,                         // metres lifted at apex
+      duration: opts.duration ?? 0.7,
+      t: 0,
+      onComplete: () => {
+        if (promotion) {
+          ch.piecesGroup.remove(fromMesh);
+          this._placeChessPiece(move.to.r, move.to.c, {
+            type: promotion, color: colorOfMover,
+          });
+        }
+        onComplete?.();
+      },
+    });
+  }
+
+  _animateCapture(mesh) {
+    const ch = this._chess;
+    ch.anims.push({
+      kind: 'capture',
+      mesh,
+      t: 0,
+      duration: 0.45,
+      onComplete: () => {
+        ch.piecesGroup.remove(mesh);
+      },
+    });
+  }
+
+  _animateAICursorTo(targetR, targetC, duration, onComplete, opts = {}) {
+    const ch = this._chess;
+    const { x, z } = this._chessSquareCentre(targetR, targetC);
+    const fromVec = ch.aiCursor.position.clone();
+    const toVec = new THREE.Vector3(x, 0, z);
+    if (ch.aiCursorState === 'hidden') {
+      ch.aiCursor.position.copy(toVec);    // snap on first show
+      ch.aiCursor.visible = true;
+      ch.aiCursorState = 'fadeIn';
+    }
+    ch.anims.push({
+      kind: 'cursor',
+      from: fromVec,
+      to: toVec,
+      t: 0,
+      duration: duration ?? 0.55,
+      fadeIn: opts.fadeIn ?? false,
+      fadeOut: opts.fadeOut ?? false,
+      onComplete,
+    });
+  }
+
+  _tickChessAnimations(delta) {
+    const ch = this._chess;
+    if (!ch?.anims?.length) return;
+    const remaining = [];
+    for (const a of ch.anims) {
+      a.t = Math.min(1, a.t + delta / a.duration);
+      const e = this._easeInOut(a.t);
+      if (a.kind === 'piece') {
+        const x = a.from.x + (a.to.x - a.from.x) * e;
+        const z = a.from.z + (a.to.z - a.from.z) * e;
+        // Parabolic lift — sin(πt) gives 0 at endpoints, 1 at midpoint.
+        const lift = Math.sin(Math.PI * e) * a.arc;
+        a.mesh.position.set(x, 0.073 + lift, z);
+      } else if (a.kind === 'capture') {
+        // Captured piece sinks AND shrinks. We avoid touching material
+        // opacity here because piece factories share materials across
+        // every piece of the same colour — fading the material would
+        // ghost out the entire army on capture.
+        a.mesh.position.y = 0.073 - 0.45 * e;
+        const s = Math.max(0.001, 1 - e);
+        a.mesh.scale.set(s, s, s);
+      } else if (a.kind === 'cursor') {
+        ch.aiCursor.position.x = a.from.x + (a.to.x - a.from.x) * e;
+        ch.aiCursor.position.z = a.from.z + (a.to.z - a.from.z) * e;
+        if (a.fadeIn) this._setAICursorOpacity(e);
+        else if (a.fadeOut) this._setAICursorOpacity(1 - e);
+      }
+      if (a.t >= 1) {
+        a.onComplete?.();
+      } else {
+        remaining.push(a);
+      }
+    }
+    ch.anims = remaining;
+  }
+
+  _easeInOut(t) {
+    // Smooth acceleration / deceleration for piece travel.
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  AI turn:  pick best move via 2-ply minimax, then animate
+  //  (1) cursor approaches the source square,
+  //  (2) cursor + piece travel to destination,
+  //  (3) cursor fades out.
+  // ────────────────────────────────────────────────────────────
+  _chessAITurn() {
+    const ch = this._chess;
+    if (!ch.active || ch.turn !== 'black') return;
+
+    const move = this._chessAIChooseMove();
+    if (!move) {
+      // No legal moves — checkmate (player wins) or stalemate.
+      const king = this._chessFindKing(ch.board, 'black');
+      const inCheck = king && this._chessIsAttacked(ch.board, king.r, king.c, 'white');
+      ch.thinking = false;
+      this._onWin(inCheck ? 'player' : 'player');   // stalemate counts as player conclusion
+      return;
+    }
+
+    // Phase 1: cursor approaches source square. Fades in if hidden.
+    this._animateAICursorTo(move.from.r, move.from.c, 0.55, () => {
+      // Phase 2: cursor + piece travel to destination together.
+      this._animateAICursorTo(move.to.r, move.to.c, 0.65);
+      this._applyMoveToBoard(move);
+      this._animateMove(move, () => {
+        // Phase 3: cursor fades out.
+        this._animateAICursorTo(move.to.r, move.to.c, 0.4, () => {
+          this._hideAICursor();
+          this._chessFinishAITurn(move);
+        }, { fadeOut: true });
+      }, { duration: 0.65 });
+    }, { fadeIn: ch.aiCursorState === 'hidden' });
+  }
+
+  _chessFinishAITurn(move) {
+    const ch = this._chess;
+    ch.thinking = false;
+    if (this.companion) this.companion.setExpression('idle');
+
+    // Reactions
+    const playerKing = this._chessFindKing(ch.board, 'white');
+    const playerInCheck = playerKing &&
+      this._chessIsAttacked(ch.board, playerKing.r, playerKing.c, 'black');
+    const playerMoves = this._chessLegalMoves(ch.board, 'white');
+    if (playerMoves.length === 0) {
+      this._onWin(playerInCheck ? 'ai' : 'ai');     // stalemate ends match
+      return;
+    }
+    if (move.captured) this._say('aiCapture');
+    else if (playerInCheck) this._say('aiCheck');
+    else if (Math.random() < 0.4) this._say('aiMove');
+
+    ch.turn = 'white';
+  }
+
+  // 2-ply minimax — for each AI candidate, evaluate the WORST response
+  // the player could make, then pick the move whose worst response is
+  // best. Quick (≈1k-2k evals) and good enough for casual play.
+  _chessAIChooseMove() {
+    const ch = this._chess;
+    const moves = this._chessLegalMoves(ch.board, 'black');
+    if (!moves.length) return null;
+
+    let best = -Infinity, candidates = [];
+    for (const m of moves) {
+      const undo = this._applySimulated(ch.board, m);
+      const playerMoves = this._chessLegalMoves(ch.board, 'white');
+      let worst;
+      if (playerMoves.length === 0) {
+        const king = this._chessFindKing(ch.board, 'white');
+        const inCheck = king && this._chessIsAttacked(ch.board, king.r, king.c, 'black');
+        worst = inCheck ? 1e7 : 0;     // mate or stalemate
+      } else {
+        worst = Infinity;
+        for (const m2 of playerMoves) {
+          const undo2 = this._applySimulated(ch.board, m2);
+          const e = this._chessEval(ch.board);
+          undo2();
+          if (e < worst) worst = e;
+          if (worst < best) break;       // alpha-beta-ish prune
+        }
+      }
+      undo();
+      if (worst > best) { best = worst; candidates = [m]; }
+      else if (worst === best) candidates.push(m);
+    }
+    return candidates[(Math.random() * candidates.length) | 0];
+  }
+
+  // Apply a move in-place; returns an undo closure.
+  _applySimulated(board, move) {
+    const captured = board[move.to.r][move.to.c];
+    const piece = board[move.from.r][move.from.c];
+    const finalP = move.promotion
+      ? { type: move.promotion, color: piece.color }
+      : piece;
+    board[move.to.r][move.to.c] = finalP;
+    board[move.from.r][move.from.c] = null;
+    return () => {
+      board[move.from.r][move.from.c] = piece;
+      board[move.to.r][move.to.c] = captured;
+    };
+  }
+
+  // Evaluation: positive = favour BLACK (the AI). Material + small
+  // positional bonuses for centre and pawn advancement.
+  _chessEval(board) {
+    const VAL = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
+    let s = 0;
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      const p = board[r][c];
+      if (!p) continue;
+      const sign = p.color === 'black' ? 1 : -1;
+      let bonus = 0;
+      if (r >= 2 && r <= 5 && c >= 2 && c <= 5) bonus += 6;
+      if (r >= 3 && r <= 4 && c >= 3 && c <= 4) bonus += 6;
+      if (p.type === 'p') {
+        bonus += p.color === 'black' ? r * 2 : (7 - r) * 2;
+      }
+      // Develop knights/bishops slightly off back rank.
+      if ((p.type === 'n' || p.type === 'b')) {
+        if (p.color === 'black' && r > 0) bonus += 4;
+        if (p.color === 'white' && r < 7) bonus += 4;
+      }
+      s += sign * (VAL[p.type] + bonus);
+    }
+    return s;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  //  Move generation + check detection
+  // ────────────────────────────────────────────────────────────
+  _chessLegalMoves(board, color) {
+    const moves = this._chessGenPseudoMoves(board, color);
+    const opp = color === 'white' ? 'black' : 'white';
+    const legal = [];
+    for (const m of moves) {
+      const undo = this._applySimulated(board, m);
+      const king = this._chessFindKing(board, color);
+      const inCheck = king
+        ? this._chessIsAttacked(board, king.r, king.c, opp)
+        : true;
+      undo();
+      if (!inCheck) legal.push(m);
+    }
+    return legal;
+  }
+
+  _chessGenPseudoMoves(board, color) {
+    const moves = [];
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      const p = board[r][c];
+      if (!p || p.color !== color) continue;
+      this._appendPieceMoves(board, r, c, p, moves);
+    }
+    return moves;
+  }
+
+  _appendPieceMoves(board, r, c, p, out) {
+    switch (p.type) {
+      case 'p': {
+        // White starts at row 7 → moves toward row 0 (dr = -1).
+        // Black starts at row 0 → moves toward row 7 (dr = +1).
+        const dir = p.color === 'white' ? -1 : 1;
+        const startRow = p.color === 'white' ? 6 : 1;
+        const lastRow = p.color === 'white' ? 0 : 7;
+        const r1 = r + dir;
+        if (r1 >= 0 && r1 < 8 && !board[r1][c]) {
+          if (r1 === lastRow) out.push({ from:{r,c}, to:{r:r1,c}, promotion:'q' });
+          else out.push({ from:{r,c}, to:{r:r1,c} });
+          const r2 = r + 2 * dir;
+          if (r === startRow && !board[r2][c]) {
+            out.push({ from:{r,c}, to:{r:r2,c} });
+          }
+        }
+        for (const dc of [-1, 1]) {
+          const tr = r + dir, tc = c + dc;
+          if (tr < 0 || tr >= 8 || tc < 0 || tc >= 8) continue;
+          const tgt = board[tr][tc];
+          if (tgt && tgt.color !== p.color) {
+            if (tr === lastRow) out.push({ from:{r,c}, to:{r:tr,c:tc}, captured:tgt, promotion:'q' });
+            else out.push({ from:{r,c}, to:{r:tr,c:tc}, captured:tgt });
+          }
+        }
+        break;
+      }
+      case 'n': {
+        const off = [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]];
+        for (const [dr, dc] of off) {
+          const tr = r + dr, tc = c + dc;
+          if (tr < 0 || tr >= 8 || tc < 0 || tc >= 8) continue;
+          const tgt = board[tr][tc];
+          if (!tgt) out.push({ from:{r,c}, to:{r:tr,c:tc} });
+          else if (tgt.color !== p.color) out.push({ from:{r,c}, to:{r:tr,c:tc}, captured:tgt });
+        }
+        break;
+      }
+      case 'b': case 'r': case 'q': {
+        const dirs = [];
+        if (p.type === 'b' || p.type === 'q') dirs.push([-1,-1],[-1,1],[1,-1],[1,1]);
+        if (p.type === 'r' || p.type === 'q') dirs.push([-1,0],[1,0],[0,-1],[0,1]);
+        for (const [dr, dc] of dirs) {
+          let tr = r + dr, tc = c + dc;
+          while (tr >= 0 && tr < 8 && tc >= 0 && tc < 8) {
+            const tgt = board[tr][tc];
+            if (!tgt) {
+              out.push({ from:{r,c}, to:{r:tr,c:tc} });
+            } else {
+              if (tgt.color !== p.color) out.push({ from:{r,c}, to:{r:tr,c:tc}, captured:tgt });
+              break;
+            }
+            tr += dr; tc += dc;
+          }
+        }
+        break;
+      }
+      case 'k': {
+        for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+          if (!dr && !dc) continue;
+          const tr = r + dr, tc = c + dc;
+          if (tr < 0 || tr >= 8 || tc < 0 || tc >= 8) continue;
+          const tgt = board[tr][tc];
+          if (!tgt) out.push({ from:{r,c}, to:{r:tr,c:tc} });
+          else if (tgt.color !== p.color) out.push({ from:{r,c}, to:{r:tr,c:tc}, captured:tgt });
+        }
+        break;
+      }
+    }
+  }
+
+  _chessFindKing(board, color) {
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      const p = board[r][c];
+      if (p && p.color === color && p.type === 'k') return { r, c };
+    }
+    return null;
+  }
+
+  _chessIsAttacked(board, r, c, attacker) {
+    // Pawn attacks. A pawn at (r ± dir, c ± 1) attacks (r, c). White
+    // pawns move -r (so attack from r+1 toward r); black move +r
+    // (so attack from r-1 toward r).
+    const pdir = attacker === 'white' ? 1 : -1;
+    for (const dc of [-1, 1]) {
+      const pr = r + pdir, pc = c + dc;
+      if (pr < 0 || pr >= 8 || pc < 0 || pc >= 8) continue;
+      const p = board[pr][pc];
+      if (p && p.color === attacker && p.type === 'p') return true;
+    }
+    // Knight attacks.
+    for (const [dr, dc] of [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]) {
+      const tr = r + dr, tc = c + dc;
+      if (tr < 0 || tr >= 8 || tc < 0 || tc >= 8) continue;
+      const p = board[tr][tc];
+      if (p && p.color === attacker && p.type === 'n') return true;
+    }
+    // Bishop / queen diagonals.
+    for (const [dr, dc] of [[-1,-1],[-1,1],[1,-1],[1,1]]) {
+      let tr = r + dr, tc = c + dc;
+      while (tr >= 0 && tr < 8 && tc >= 0 && tc < 8) {
+        const p = board[tr][tc];
+        if (p) {
+          if (p.color === attacker && (p.type === 'b' || p.type === 'q')) return true;
+          break;
+        }
+        tr += dr; tc += dc;
+      }
+    }
+    // Rook / queen straights.
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      let tr = r + dr, tc = c + dc;
+      while (tr >= 0 && tr < 8 && tc >= 0 && tc < 8) {
+        const p = board[tr][tc];
+        if (p) {
+          if (p.color === attacker && (p.type === 'r' || p.type === 'q')) return true;
+          break;
+        }
+        tr += dr; tc += dc;
+      }
+    }
+    // King attacks.
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      if (!dr && !dc) continue;
+      const tr = r + dr, tc = c + dc;
+      if (tr < 0 || tr >= 8 || tc < 0 || tc >= 8) continue;
+      const p = board[tr][tc];
+      if (p && p.color === attacker && p.type === 'k') return true;
+    }
+    return false;
   }
 
   getSpawnPoint() {
