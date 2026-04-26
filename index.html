@@ -3,6 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!--
+    Belt-and-suspenders cache hints for browsers that already have an
+    older copy of this HTML cached from before vercel.json had any
+    Cache-Control headers. The HTTP headers in vercel.json are the
+    primary mechanism (they're what browsers actually trust) but
+    these meta equivs catch a few legacy paths.
+  -->
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>Campus Companion XR · 校园心灵伴侣 XR</title>
   <script type="importmap">
   {
@@ -19,7 +29,7 @@
     Cache-Control: no-cache headers handle the steady state; this
     query string is the one-time kick to flush already-cached assets.
   -->
-  <link rel="stylesheet" href="css/style.css?v=20260426-2" />
+  <link rel="stylesheet" href="css/style.css?v=20260426-3" />
 </head>
 <body>
 
@@ -135,14 +145,14 @@
        script once. After this load, the no-cache headers in vercel.json
        keep further deploys arriving on the headset without a manual
        refresh. Bump the version when you need another forced flush. -->
-  <script src="js/config.js?v=20260426-2"></script>
-  <script src="js/tripo.js?v=20260426-2"></script>
-  <script src="js/agent.js?v=20260426-2"></script>
-  <script src="js/chat.js?v=20260426-2"></script>
-  <script src="js/voice.js?v=20260426-2"></script>
-  <script src="js/vr-panels.js?v=20260426-2"></script>
-  <script src="js/home-theater.js?v=20260426-2"></script>
-  <script type="module" src="js/main.js?v=20260426-2"></script>
+  <script src="js/config.js?v=20260426-3"></script>
+  <script src="js/tripo.js?v=20260426-3"></script>
+  <script src="js/agent.js?v=20260426-3"></script>
+  <script src="js/chat.js?v=20260426-3"></script>
+  <script src="js/voice.js?v=20260426-3"></script>
+  <script src="js/vr-panels.js?v=20260426-3"></script>
+  <script src="js/home-theater.js?v=20260426-3"></script>
+  <script type="module" src="js/main.js?v=20260426-3"></script>
 
 </body>
 </html>

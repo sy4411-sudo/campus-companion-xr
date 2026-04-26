@@ -8,8 +8,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { mountTripoModel } from './tripo-loader.js?v=20260426-2';
-import { AICompanion }     from './ai-companion.js?v=20260426-2';
+import { mountTripoModel } from './tripo-loader.js?v=20260426-3';
+import { AICompanion }     from './ai-companion.js?v=20260426-3';
 
 export class CampusScene {
   constructor(canvas) {
