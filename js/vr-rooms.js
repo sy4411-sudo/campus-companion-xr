@@ -3177,57 +3177,1071 @@ class LeisureVRRoom extends VRRoom {
 // ============================================================
 //  Healing Room (疗愈区)
 // ============================================================
+/**
+ * HealingVRRoom — guided breathing + mood journal + ambient particles.
+ *
+ * Architectural mirror of LeisureVRRoom / StudyVRRoom (custom shell, AI
+ * companion, interactables registered via `userData.onClick`, per-frame
+ * `update(delta)` hook). What's unique here:
+ *
+ *   • Breathing orb       — translucent sphere + emissive halo + a floor
+ *                           guidance ring whose radius and brightness
+ *                           track a 4-phase breathing pattern (inhale →
+ *                           hold → exhale → hold). The on-screen phase
+ *                           label reads "吸气 / Inhale" etc., and the
+ *                           companion 莲莲 quietly cues the player at
+ *                           each transition.
+ *   • Pattern presets     — START / PAUSE / NATURAL (4-4-6-2) / BOX
+ *                           (4-4-4-4) / 4-7-8 (Dr. Weil).
+ *   • Mood stones         — five clickable floor stones (calm, happy,
+ *                           tired, anxious, sad). Tapping logs the mood
+ *                           into a session journal that's mirrored on a
+ *                           wall plaque (tally bars + colour-dot
+ *                           timeline). Session-only — no persistence,
+ *                           per the project's "no localStorage" rule.
+ *   • Particle ambience   — two THREE.Points layers: drifting cherry-
+ *                           blossom petals (slow downward sway) and a
+ *                           swirling firefly bokeh layer that gently
+ *                           pulses with the breathing rhythm when a
+ *                           session is active.
+ *   • Companion 莲莲       — soft mint-sage orb, doesn't follow the
+ *                           player around (a meditation guide should
+ *                           hold the centre). She turns to watch the
+ *                           player and speaks softly at phase changes.
+ */
 class HealingVRRoom extends VRRoom {
   constructor(scene, options = {}) {
     super(scene, options);
+
+    // ── Breathing-session state machine ────────────────────────
+    // Patterns are [inhale, holdIn, exhale, holdOut] in seconds.
+    this._patterns = {
+      natural: { id: 'natural', en: 'Natural', zh: '自然 4-4-6-2', durations: [4, 4, 6, 2] },
+      box:     { id: 'box',     en: 'Box',     zh: '盒式 4-4-4-4', durations: [4, 4, 4, 4] },
+      '478':   { id: '478',     en: '4-7-8',   zh: '4-7-8 法',     durations: [4, 7, 8, 1] },
+    };
+    this._sessionRunning = false;
+    this._currentPattern = this._patterns.natural;
+    this._phaseIdx       = 0;     // 0=inhale, 1=holdIn, 2=exhale, 3=holdOut
+    this._phaseElapsed   = 0;     // seconds in the current phase
+    this._cycleCount     = 0;     // completed full cycles so far
+
+    // ── Mood log (session-only) ────────────────────────────────
+    this._moodLog = {
+      calm:    { count: 0, en: 'Calm',    zh: '平静', emoji: '🌿', color: '#7DC9A8' },
+      happy:   { count: 0, en: 'Happy',   zh: '开心', emoji: '☀️', color: '#F4C36C' },
+      tired:   { count: 0, en: 'Tired',   zh: '疲惫', emoji: '🌙', color: '#9FB0D8' },
+      anxious: { count: 0, en: 'Anxious', zh: '焦虑', emoji: '🌧️', color: '#C9A8E0' },
+      sad:     { count: 0, en: 'Sad',     zh: '低落', emoji: '💧', color: '#7AB8D8' },
+    };
+    this._moodTimeline = [];     // array of mood ids, oldest → newest
+    this._moodMirrorDirty = true;
+
+    // ── Companion follow / chatter timers ──────────────────────
+    // 莲莲 stays put (meditation guide), so unlike Study / Leisure she
+    // doesn't get a side-of-player follow target — only `lookAtStudent`
+    // turns her head. Idle chatter is sparser and only when no session.
+    this._studentLocal = new THREE.Vector3();
+    this._idleTimer    = null;
+    this._greetTimer   = null;
+    this._lastSaidAt   = 0;
+
+    // ── Visual refs filled in by build() ───────────────────────
+    this._orbCore      = null;   // glowing core sphere
+    this._orbHalo      = null;   // outer translucent shell
+    this._orbHaloMat   = null;
+    this._orbCoreMat   = null;
+    this._floorRing    = null;   // expanding/contracting floor guide
+    this._floorRingMat = null;
+    this._phaseLabel   = null;   // floating canvas plane near orb
+    this._phaseCanvas  = null;
+    this._phaseCtx     = null;
+    this._phaseTex     = null;
+    this._mirrorCanvas = null;
+    this._mirrorCtx    = null;
+    this._mirrorTex    = null;
+    this._petalPoints  = null;   // THREE.Points — drifting petals
+    this._fireflyPoints = null;  // THREE.Points — bokeh fireflies
+    this._patternBtns  = [];     // pattern preset buttons (for highlight)
+
+    this._initLines();
     this.build();
   }
 
+  // ── Room construction ──────────────────────────────────────
   build() {
-    this._buildRoom(18, 18, 5, 0xE8DCC8, 0xD4E6D4);
-    this._buildAICompanion(2, 0.5, 0, 0x98C8A0);
-    this._buildExitDoor(0, 0, 8);
-    
-    // Soft natural lighting
-    const warmLight = new THREE.PointLight(0xFFF5E1, 0.6, 15);
-    warmLight.position.set(0, 4, 0);
-    this.group.add(warmLight);
-    
-    // Zen rock garden composition.
+    this._buildSerenityShell(20, 20, 5);
+
+    // 莲莲 — soft mint-sage. Hovers near the breathing orb and stays
+    // there so she reads as a meditation guide rather than a follower.
+    this._buildAICompanion(1.5, 1.4, -1.5, 0xB8E0CE);
+    this.companion?.setMode?.('idle');
+
+    // Exit portal at the front of the room.
+    this._buildExitDoor(0, 0, 9);
+
+    // Lighting: warm hemisphere fill + four soft pendant lights.
+    this.group.add(new THREE.HemisphereLight(0xfff2dc, 0x2a3a30, 0.55));
+    this.group.add(new THREE.AmbientLight(0xffe8d0, 0.20));
+    for (const [x, z] of [[-5, -3], [5, -3], [-5, 3], [5, 3]]) {
+      const l = new THREE.PointLight(0xffe6c8, 0.5, 9, 1.6);
+      l.position.set(x, 4.4, z);
+      this.group.add(l);
+    }
+
+    // Breathing centerpiece + UI plaques + interactables.
+    this._buildBreathingOrb();
+    this._buildPhaseLabel();
+    this._buildSessionControls();      // START / PAUSE / NATURAL / BOX / 4-7-8
+    this._buildMoodStones();
+    this._buildMoodMirror();           // wall plaque rendered from journal
+    this._buildParticleField();        // drifting petals + bokeh fireflies
+
+    // Garden props (carried over from the previous static layout, but
+    // pulled to the perimeter so the breathing orb owns the centre).
     mountTripoModel(this.group, 'zen_rock_garden',
-      { position: [-3, 0, -4], targetSize: 3.0, yAlign: 'bottom' });
-
-    // Meditation cushions (cached → 1 fetch for all 3).
-    mountTripoModel(this.group, 'cushion_zafu',
-      { position: [0, 0, 4], targetSize: 0.6, yAlign: 'bottom' });
-    mountTripoModel(this.group, 'cushion_zafu',
-      { position: [-2, 0, 3], targetSize: 0.6, yAlign: 'bottom' });
-    mountTripoModel(this.group, 'cushion_zafu',
-      { position: [2, 0, 3], targetSize: 0.6, yAlign: 'bottom' });
-
-    // Bamboo plants in clay pots (cached).
+      { position: [-7.0, 0, -7.0], rotationY: Math.PI * 0.15,
+        targetSize: 3.0, yAlign: 'bottom' });
+    mountTripoModel(this.group, 'tsukubai',
+      { position: [ 7.0, 0, -6.5], rotationY: -Math.PI * 0.25,
+        targetSize: 1.4, yAlign: 'bottom' });
+    mountTripoModel(this.group, 'bonsai_tree',
+      { position: [ 0.0, 0, -8.5], targetSize: 1.2, yAlign: 'bottom' });
     for (let i = 0; i < 3; i++) {
       mountTripoModel(this.group, 'bamboo_pot', {
-        position: [-8 + i * 0.8, 0, -8],
+        position: [-9.2, 0, -3 + i * 3],
         rotationY: Math.random() * Math.PI * 2,
-        targetSize: 1.6,
-        yAlign: 'bottom',
+        targetSize: 1.6, yAlign: 'bottom',
+      });
+      mountTripoModel(this.group, 'bamboo_pot', {
+        position: [ 9.2, 0, -3 + i * 3],
+        rotationY: Math.random() * Math.PI * 2,
+        targetSize: 1.6, yAlign: 'bottom',
+      });
+    }
+    // Cushions in a small arc facing the orb so the player has a
+    // visual cue for "this is where you sit and breathe".
+    for (let i = -1; i <= 1; i++) {
+      mountTripoModel(this.group, 'cushion_zafu', {
+        position: [i * 1.6, 0, 1.5],
+        rotationY: Math.PI,        // facing -Z (toward the orb)
+        targetSize: 0.6, yAlign: 'bottom',
       });
     }
 
-    // Bonsai tree centerpiece.
-    mountTripoModel(this.group, 'bonsai_tree',
-      { position: [0, 0, -7], targetSize: 1.2, yAlign: 'bottom' });
-
-    // Stone water feature.
-    mountTripoModel(this.group, 'tsukubai',
-      { position: [5, 0, -5], targetSize: 1.4, yAlign: 'bottom' });
+    this._setPattern('natural', /*announce=*/false);
+    this._renderPhaseLabel();
+    this._renderMoodMirror();
 
     this.onReady();
   }
 
   getSpawnPoint() {
-    return this.roomPosition.clone().add(new THREE.Vector3(0, 0, 5));
+    // Drop the player a few metres in front of the orb, between the
+    // cushions and the controls, facing -Z toward the breathing orb.
+    return this.roomPosition.clone().add(new THREE.Vector3(0, 0, 6));
+  }
+
+  // ── Lifecycle ──────────────────────────────────────────────
+  enter() {
+    super.enter();
+    if (this._greetTimer) clearTimeout(this._greetTimer);
+    this._greetTimer = setTimeout(() => {
+      this._greetTimer = null;
+      if (!this.isActive) return;
+      this._say('greet');
+      this._scheduleIdleChatter(14000 + Math.random() * 8000);
+    }, 1800);
+  }
+
+  exit() {
+    super.exit();
+    if (this._idleTimer)  { clearTimeout(this._idleTimer);  this._idleTimer  = null; }
+    if (this._greetTimer) { clearTimeout(this._greetTimer); this._greetTimer = null; }
+    this._sessionRunning = false;
+    this.companion?.hideBubble?.();
+    this.companion?.setExpression?.('idle');
+  }
+
+  // Per-frame: drive the breathing orb, particles, mirror redraw, and
+  // turn the companion to face the player. Mirror super.update so the
+  // companion's own animation keeps running.
+  update(delta, camWorld) {
+    super.update(delta, camWorld);
+    this._updateBreathing(delta);
+    this._updateParticles(delta);
+    if (this._moodMirrorDirty) {
+      this._renderMoodMirror();
+      this._moodMirrorDirty = false;
+    }
+  }
+
+  // Companion turns (but doesn't translate) toward the player.
+  updateStudentPosition(worldPos) {
+    if (!this.companion) return;
+    const local = this._studentLocal.copy(worldPos).sub(this.roomPosition);
+    this.companion.lookAtStudent(local.clone());
+  }
+
+  // ── Speech helpers ─────────────────────────────────────────
+  _initLines() {
+    this._lines = {
+      greet: [
+        '欢迎来到疗愈花园~ 我是莲莲.\n' +
+        'Welcome. I\'m 莲莲. Take a breath, you\'re safe here.',
+        '想做几节呼吸吗? 按下 START, 我陪你.\n' +
+        'Press START whenever you\'re ready — I\'ll pace it with you.',
+      ],
+      idle: [
+        '随时按 START, 我陪你呼吸.\n' +
+        'Whenever you\'re ready, hit START.',
+        '左右两边的小石头可以记录心情, 试试看?\n' +
+        'The stones around the orb log your mood — feel free to tap one.',
+        '深呼吸一下, 慢一点也没关系.\n' +
+        'Take a slow breath. There\'s no rush.',
+      ],
+      idleSession: [
+        '跟着光圈, 慢慢地~\n' +
+        'Just follow the ring. Slow and steady.',
+      ],
+      patternChanged: [
+        '换成新的节奏啦.\n' +
+        'New pattern set.',
+      ],
+      sessionStart: [
+        '开始啦. 让肩膀放下来.\n' +
+        'Beginning. Let your shoulders drop.',
+        '一起来 — 鼻吸口呼.\n' +
+        'Here we go — in through the nose, out through the mouth.',
+      ],
+      sessionPause: [
+        '先停一下, 不急.\n' +
+        'Pausing. Take your time.',
+      ],
+      // Cycle prompts — kept very short so they don't crowd the bubble.
+      inhale:  ['吸气 ~\nBreathe in ~'],
+      holdIn:  ['屏住 ~\nHold ~'],
+      exhale:  ['呼气 ~\nLet it out ~'],
+      holdOut: ['放松 ~\nRest ~'],
+      cycleMilestone: [
+        '已经做完五个回合啦, 你做得很好.\n' +
+        'Five cycles done — beautifully paced.',
+      ],
+      moodAck: {
+        calm:    '记下了, "平静" ✦\nLogged: calm. Glad to hear it.',
+        happy:   '记下了, "开心" ☀\nLogged: happy. Hold onto this feeling.',
+        tired:   '记下了, "疲惫" 🌙\nLogged: tired. Be gentle with yourself.',
+        anxious: '记下了, "焦虑" ☁\n' +
+                 'Logged: anxious. Try a few slow breaths with me?',
+        sad:     '记下了, "低落" 💧\nLogged: sad. I\'m here.',
+      },
+    };
+  }
+
+  _say(category, payload) {
+    if (!this.companion?.say) return;
+    const pool = this._lines?.[category];
+    let text;
+    if (Array.isArray(pool) && pool.length) {
+      text = pool[(Math.random() * pool.length) | 0];
+    } else if (typeof payload === 'string') {
+      text = payload;
+    } else if (pool && typeof pool === 'object' && payload) {
+      text = pool[payload];
+    }
+    if (!text) return;
+    this.companion.say(text);
+    this._lastSaidAt = performance.now();
+  }
+
+  _scheduleIdleChatter(initialDelayMs) {
+    if (this._idleTimer) clearTimeout(this._idleTimer);
+    const delay = initialDelayMs ?? (18000 + Math.random() * 12000);
+    this._idleTimer = setTimeout(() => {
+      this._idleTimer = null;
+      if (!this.isActive) return;
+      // Avoid talking over a recent prompt.
+      if (performance.now() - this._lastSaidAt > 6000) {
+        this._say(this._sessionRunning ? 'idleSession' : 'idle');
+      }
+      this._scheduleIdleChatter();
+    }, Math.max(2500, delay));
+  }
+
+  // ── Breathing session ──────────────────────────────────────
+  _setPattern(id, announce = true) {
+    const p = this._patterns[id] || this._patterns.natural;
+    this._currentPattern = p;
+    // Reset phase to start of cycle so the new rhythm starts cleanly.
+    this._phaseIdx     = 0;
+    this._phaseElapsed = 0;
+    // Visual highlight on the pattern button row.
+    for (const btn of this._patternBtns) {
+      btn.userData.setActive?.(btn.userData.patternId === p.id);
+    }
+    this._renderPhaseLabel();
+    if (announce) this._say('patternChanged');
+  }
+
+  _toggleSession(forceState) {
+    const target = (typeof forceState === 'boolean')
+      ? forceState : !this._sessionRunning;
+    if (target === this._sessionRunning) return;
+    this._sessionRunning = target;
+    if (target) {
+      this._phaseIdx     = 0;
+      this._phaseElapsed = 0;
+      this._cycleCount   = 0;
+      this.companion?.setExpression?.('happy');
+      this._say('sessionStart');
+      // Speak the first inhale prompt half a second after the
+      // "Beginning" line so they don't overlap.
+      setTimeout(() => {
+        if (this._sessionRunning && this.isActive) this._say('inhale');
+      }, 1100);
+    } else {
+      this.companion?.setExpression?.('idle');
+      this._say('sessionPause');
+    }
+    this._renderPhaseLabel();
+  }
+
+  _updateBreathing(delta) {
+    const p = this._currentPattern;
+    const dur = p.durations[this._phaseIdx] || 1;
+
+    // Advance phase clock only when running.
+    if (this._sessionRunning) {
+      this._phaseElapsed += delta;
+      if (this._phaseElapsed >= dur) {
+        this._phaseElapsed = 0;
+        this._phaseIdx = (this._phaseIdx + 1) % 4;
+        if (this._phaseIdx === 0) {
+          this._cycleCount += 1;
+          // Quiet milestone at the 5th completed cycle, then again
+          // every 5 — but only one per session block to avoid spam.
+          if (this._cycleCount === 5) {
+            setTimeout(() => {
+              if (this._sessionRunning && this.isActive) {
+                this._say('cycleMilestone');
+              }
+            }, 400);
+          }
+        }
+        // Per-phase soft cue, only every other cycle so it doesn't
+        // crowd the bubble. Cycle 0/2/4… speak; 1/3/5… stay silent.
+        if (this._cycleCount % 2 === 0) {
+          const key = ['inhale', 'holdIn', 'exhale', 'holdOut'][this._phaseIdx];
+          this._say(key);
+        }
+        this._renderPhaseLabel();
+      }
+    }
+
+    // Compute a 0..1 "fullness" used to drive scale and emission, where
+    // 0 = fully exhaled and 1 = fully inhaled. Smooth ease so the orb
+    // breathes naturally rather than ramping linearly.
+    const t = this._phaseElapsed / dur;     // 0..1 within current phase
+    const ease = (x) => 0.5 - 0.5 * Math.cos(Math.PI * x);
+    let fullness;
+    switch (this._phaseIdx) {
+      case 0: fullness = ease(t); break;          // inhale 0 → 1
+      case 1: fullness = 1; break;                 // hold-in
+      case 2: fullness = 1 - ease(t); break;       // exhale 1 → 0
+      default: fullness = 0; break;                // hold-out
+    }
+
+    // Drive visuals.
+    if (this._orbCore) {
+      const s = 0.85 + 0.55 * fullness;
+      this._orbCore.scale.setScalar(s);
+      if (this._orbCoreMat) {
+        this._orbCoreMat.emissiveIntensity = 0.5 + 1.2 * fullness;
+      }
+      this._orbHalo?.scale.setScalar(s * 1.2);
+      if (this._orbHaloMat) this._orbHaloMat.opacity = 0.18 + 0.32 * fullness;
+    }
+    if (this._floorRing) {
+      const r = 0.8 + 1.7 * fullness;
+      this._floorRing.scale.setScalar(r);
+      if (this._floorRingMat) {
+        this._floorRingMat.opacity = 0.25 + 0.50 * fullness;
+      }
+    }
+    // Cache fullness for particles to pulse with.
+    this._fullness = fullness;
+  }
+
+  // ── Mood logging ───────────────────────────────────────────
+  _logMood(id) {
+    const entry = this._moodLog[id];
+    if (!entry) return;
+    entry.count += 1;
+    this._moodTimeline.push(id);
+    if (this._moodTimeline.length > 60) this._moodTimeline.shift();
+    this._moodMirrorDirty = true;
+    this.companion?.setExpression?.('happy');
+    this._say('moodAck', id);
+  }
+
+  // ── Serenity shell (sage walls + light wood floor + ceiling) ─
+  _buildSerenityShell(width, depth, height) {
+    this.roomSize = { width, depth, height };
+
+    // Floor — pale honey wood.
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0xc7a878, roughness: 0.82, metalness: 0.04,
+    });
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    this.group.add(floor);
+
+    // Inner tatami circle for the meditation centre.
+    const tatamiMat = new THREE.MeshStandardMaterial({
+      color: 0xd9c187, roughness: 0.92, metalness: 0.0,
+    });
+    const tatami = new THREE.Mesh(new THREE.CircleGeometry(3.2, 48), tatamiMat);
+    tatami.rotation.x = -Math.PI / 2;
+    tatami.position.set(0, 0.005, -1.8);
+    this.group.add(tatami);
+
+    // Soft sage walls.
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0xd6e2d2, roughness: 0.94, side: THREE.DoubleSide,
+    });
+    const back = new THREE.Mesh(new THREE.PlaneGeometry(width, height), wallMat);
+    back.position.set(0, height / 2, -depth / 2);
+    this.group.add(back);
+    const front = new THREE.Mesh(new THREE.PlaneGeometry(width, height), wallMat.clone());
+    front.rotation.y = Math.PI;
+    front.position.set(0, height / 2, depth / 2);
+    this.group.add(front);
+    const left = new THREE.Mesh(new THREE.PlaneGeometry(depth, height), wallMat.clone());
+    left.rotation.y = Math.PI / 2;
+    left.position.set(-width / 2, height / 2, 0);
+    this.group.add(left);
+    const right = new THREE.Mesh(new THREE.PlaneGeometry(depth, height), wallMat.clone());
+    right.rotation.y = -Math.PI / 2;
+    right.position.set(width / 2, height / 2, 0);
+    this.group.add(right);
+
+    // Ceiling — pale ivory.
+    const ceilMat = new THREE.MeshStandardMaterial({
+      color: 0xf3ecdf, roughness: 0.95,
+    });
+    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), ceilMat);
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.y = height;
+    this.group.add(ceiling);
+
+    // Subtle bamboo skirting line at floor level (decorative ring).
+    const ringMat = new THREE.MeshStandardMaterial({
+      color: 0x8c6c40, roughness: 0.6,
+    });
+    const ringGeom = new THREE.TorusGeometry(Math.min(width, depth) / 2 - 0.08, 0.04, 8, 96);
+    const skirting = new THREE.Mesh(ringGeom, ringMat);
+    skirting.rotation.x = Math.PI / 2;
+    skirting.position.y = 0.04;
+    this.group.add(skirting);
+  }
+
+  // ── Breathing orb (centerpiece) ─────────────────────────────
+  _buildBreathingOrb() {
+    // Floor guidance ring directly under the orb — fades in/out as the
+    // user inhales / exhales so the breathing is also legible from the
+    // floor up (helpful in VR where you're often looking down).
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xb6e8d0, transparent: true, opacity: 0.5,
+      side: THREE.DoubleSide, depthWrite: false,
+    });
+    const ringGeom = new THREE.RingGeometry(0.9, 1.0, 96);
+    const ring = new THREE.Mesh(ringGeom, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(0, 0.015, -2.0);
+    this.group.add(ring);
+    this._floorRing = ring;
+    this._floorRingMat = ringMat;
+
+    // Soft halo (large, translucent, additive-feeling).
+    const haloMat = new THREE.MeshBasicMaterial({
+      color: 0xc6f0dc, transparent: true, opacity: 0.30,
+      depthWrite: false, side: THREE.DoubleSide,
+    });
+    const halo = new THREE.Mesh(new THREE.SphereGeometry(0.85, 32, 24), haloMat);
+    halo.position.set(0, 1.6, -2.0);
+    this.group.add(halo);
+    this._orbHalo = halo;
+    this._orbHaloMat = haloMat;
+
+    // Glowing core sphere — emissive so it lights the room slightly.
+    const coreMat = new THREE.MeshStandardMaterial({
+      color: 0xa8d8c0,
+      emissive: 0xb8e8d0,
+      emissiveIntensity: 0.6,
+      roughness: 0.35, metalness: 0.05,
+      transparent: true, opacity: 0.92,
+    });
+    const core = new THREE.Mesh(new THREE.SphereGeometry(0.6, 48, 32), coreMat);
+    core.position.set(0, 1.6, -2.0);
+    this.group.add(core);
+    this._orbCore = core;
+    this._orbCoreMat = coreMat;
+
+    // Tiny point light cohabits with the core for ambient warm wash.
+    const orbLight = new THREE.PointLight(0xc8f0d8, 0.7, 7.5, 2.0);
+    orbLight.position.set(0, 1.6, -2.0);
+    this.group.add(orbLight);
+  }
+
+  // ── Phase label (canvas plane floating beside the orb) ────
+  _buildPhaseLabel() {
+    const W = 768, H = 384;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    this._phaseCanvas = cv;
+    this._phaseCtx    = cv.getContext('2d');
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    this._phaseTex = tex;
+
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    });
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.2), mat);
+    // Sits behind the orb so the orb reads as the focal point and the
+    // text is unmistakable above it.
+    plane.position.set(0, 3.1, -2.6);
+    this.group.add(plane);
+    this._phaseLabel = plane;
+  }
+
+  _renderPhaseLabel() {
+    if (!this._phaseCtx) return;
+    const ctx = this._phaseCtx;
+    const W = this._phaseCanvas.width;
+    const H = this._phaseCanvas.height;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Soft cream pill background with a sage trim.
+    ctx.fillStyle = 'rgba(255, 250, 240, 0.92)';
+    this._roundRect(ctx, 12, 12, W - 24, H - 24, 56); ctx.fill();
+    ctx.strokeStyle = '#7DC9A8';
+    ctx.lineWidth = 4;
+    this._roundRect(ctx, 12, 12, W - 24, H - 24, 56); ctx.stroke();
+
+    // Title (pattern + cycle counter).
+    ctx.fillStyle = '#3a4a40';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '500 36px "Inter","PingFang SC",sans-serif';
+    const p = this._currentPattern;
+    ctx.fillText(`${p.en} · ${p.zh}`, W / 2, 64);
+
+    // Phase headline.
+    const phases = [
+      { en: 'Inhale',  zh: '吸气' },
+      { en: 'Hold',    zh: '屏息' },
+      { en: 'Exhale',  zh: '呼气' },
+      { en: 'Rest',    zh: '放松' },
+    ];
+    const ph = phases[this._phaseIdx];
+    ctx.fillStyle = this._sessionRunning ? '#2c8c5c' : '#9aa39e';
+    ctx.font = '700 110px "Georgia","Times New Roman",serif';
+    ctx.fillText(ph.en, W / 2, H * 0.52);
+    ctx.fillStyle = '#5a6a60';
+    ctx.font = '500 56px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText(ph.zh, W / 2, H * 0.78);
+
+    // Footer (cycle counter or "Press START").
+    ctx.fillStyle = '#7a8a80';
+    ctx.font = '500 26px "Inter","PingFang SC",sans-serif';
+    if (this._sessionRunning) {
+      ctx.fillText(`Cycle ${this._cycleCount + 1} · 第 ${this._cycleCount + 1} 回合`, W / 2, H - 36);
+    } else {
+      ctx.fillText('Press START · 按 START 开始', W / 2, H - 36);
+    }
+
+    this._phaseTex.needsUpdate = true;
+  }
+
+  // ── Session controls (START / PAUSE / NATURAL / BOX / 4-7-8) ─
+  _buildSessionControls() {
+    const padW = 0.9, padH = 0.42, padD = 0.10;
+    const gap  = 0.12;
+    const barZ = 4.2;     // a couple metres in front of the orb
+    const barY = 1.45;
+    const buttons = [
+      { primary: 'START',  secondary: '开始',     action: () => this._toggleSession(true)  },
+      { primary: 'PAUSE',  secondary: '暂停',     action: () => this._toggleSession(false) },
+      { primary: 'NATURAL', secondary: '自然 4-4-6-2', patternId: 'natural',
+        action: () => this._setPattern('natural') },
+      { primary: 'BOX',    secondary: '盒式 4-4-4-4', patternId: 'box',
+        action: () => this._setPattern('box') },
+      { primary: '4-7-8',  secondary: '4-7-8 法',     patternId: '478',
+        action: () => this._setPattern('478') },
+    ];
+    const total = buttons.length * padW + (buttons.length - 1) * gap;
+    let x = -total / 2 + padW / 2;
+
+    const baseMat = new THREE.MeshStandardMaterial({
+      color: 0x2a3a32, roughness: 0.55, metalness: 0.25,
+    });
+    for (const def of buttons) {
+      const isActive = (def.patternId === this._currentPattern.id);
+      const tex = this._makeHealingButtonTexture(def.primary, def.secondary, isActive);
+      const faceMat = new THREE.MeshStandardMaterial({
+        map: tex, emissive: 0xffffff, emissiveMap: tex,
+        emissiveIntensity: 0.65, roughness: 0.55, metalness: 0.1,
+      });
+      const pad = new THREE.Mesh(
+        new THREE.BoxGeometry(padW, padH, padD),
+        [baseMat, baseMat, baseMat, baseMat, faceMat, baseMat],
+      );
+      pad.position.set(x, barY, barZ);
+      pad.userData.onClick = () => {
+        const z0 = pad.position.z;
+        pad.position.z = z0 - 0.04;
+        setTimeout(() => { pad.position.z = z0; }, 120);
+        def.action?.();
+      };
+      // Allow the pattern row to repaint highlight when the active
+      // pattern changes.
+      if (def.patternId) {
+        pad.userData.patternId = def.patternId;
+        pad.userData.setActive = (active) => {
+          const newTex = this._makeHealingButtonTexture(def.primary, def.secondary, active);
+          faceMat.map = newTex;
+          faceMat.emissiveMap = newTex;
+          faceMat.needsUpdate = true;
+        };
+        this._patternBtns.push(pad);
+      }
+      this.group.add(pad);
+      this.interactables.push(pad);
+      x += padW + gap;
+    }
+  }
+
+  _makeHealingButtonTexture(primary, secondary, active) {
+    const W = 256, H = 128;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    if (active) {
+      grad.addColorStop(0, '#3aa78a');
+      grad.addColorStop(1, '#1f6a55');
+    } else {
+      grad.addColorStop(0, '#2c4438');
+      grad.addColorStop(1, '#1a2a22');
+    }
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = active ? '#ffffff' : 'rgba(180, 220, 200, 0.6)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(6, 6, W - 12, H - 12);
+    ctx.fillStyle = '#f1faf3';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 36px "Inter","Helvetica Neue",sans-serif';
+    ctx.fillText(primary, W / 2, H / 2 - 12);
+    ctx.fillStyle = active ? 'rgba(255,255,255,0.9)' : 'rgba(190, 220, 205, 0.78)';
+    ctx.font = '500 22px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText(secondary, W / 2, H / 2 + 26);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Mood stones (5 round pads on the floor) ────────────────
+  _buildMoodStones() {
+    const ids   = ['calm', 'happy', 'tired', 'anxious', 'sad'];
+    const radius = 4.4;
+    // Arc them around the orb's left/front so the player can reach
+    // them after a session without losing sight of the orb.
+    const startAngle = -Math.PI * 0.22;
+    const endAngle   =  Math.PI * 1.22;
+    const span = endAngle - startAngle;
+
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const m  = this._moodLog[id];
+      const a  = startAngle + (i / (ids.length - 1)) * span;
+      // We only place stones in the front half-plane (z > -1) so the
+      // player can see + reach them. Project the arc into that band.
+      const x = Math.cos(a) * radius;
+      const z = Math.sin(a) * radius * 0.7 + 1.0;
+
+      // Stone body: short cylinder with rounded look from the bevel.
+      const stoneMat = new THREE.MeshStandardMaterial({
+        color: 0x6a7a72, roughness: 0.85, metalness: 0.05,
+      });
+      const stone = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.55, 0.62, 0.18, 32), stoneMat);
+      stone.position.set(x, 0.09, z);
+      this.group.add(stone);
+
+      // Top decal — circular CanvasTexture with emoji + label.
+      const tex = this._makeStoneTexture(m);
+      const decalMat = new THREE.MeshBasicMaterial({
+        map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      });
+      const decal = new THREE.Mesh(new THREE.CircleGeometry(0.52, 48), decalMat);
+      decal.rotation.x = -Math.PI / 2;
+      decal.position.set(x, 0.19, z);
+      this.group.add(decal);
+
+      // Click target sits on top of the decal and forwards to _logMood.
+      decal.userData.onClick = () => {
+        const y0 = stone.position.y;
+        stone.position.y = y0 - 0.04;
+        decal.position.y -= 0.04;
+        setTimeout(() => {
+          stone.position.y = y0;
+          decal.position.y = y0 + 0.10;
+        }, 130);
+        this._logMood(id);
+      };
+      this.interactables.push(decal);
+
+      // Make the stone itself clickable too — so a slightly off VR
+      // raycast still registers — by piggybacking on the same handler.
+      stone.userData.onClick = decal.userData.onClick;
+      this.interactables.push(stone);
+    }
+  }
+
+  _makeStoneTexture(mood) {
+    const D = 256;
+    const cv = document.createElement('canvas');
+    cv.width = D; cv.height = D;
+    const ctx = cv.getContext('2d');
+
+    // Soft mood-tint disc.
+    const grad = ctx.createRadialGradient(D / 2, D / 2, 20, D / 2, D / 2, D / 2);
+    grad.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+    grad.addColorStop(1, mood.color);
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(D / 2, D / 2, D / 2 - 4, 0, Math.PI * 2); ctx.fill();
+
+    // Trim ring.
+    ctx.strokeStyle = 'rgba(60, 70, 60, 0.55)';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(D / 2, D / 2, D / 2 - 6, 0, Math.PI * 2); ctx.stroke();
+
+    // Emoji
+    ctx.font = '88px "Segoe UI Emoji", Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(mood.emoji, D / 2, D * 0.43);
+
+    // Label
+    ctx.font = '700 28px "Inter","PingFang SC",sans-serif';
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fillText(`${mood.en} · ${mood.zh}`, D / 2, D * 0.78);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Mood mirror (wall plaque rendered from the journal) ───
+  _buildMoodMirror() {
+    const W = 1024, H = 640;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    this._mirrorCanvas = cv;
+    this._mirrorCtx    = cv.getContext('2d');
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    this._mirrorTex = tex;
+
+    // Frame
+    const frameMat = new THREE.MeshStandardMaterial({
+      color: 0x6a4a30, roughness: 0.5, metalness: 0.1,
+    });
+    const wallZ = -this.roomSize.depth / 2 + 0.04;
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(4.4, 2.8, 0.10), frameMat);
+    frame.position.set(-6.2, 2.6, wallZ + 0.05);
+    frame.rotation.y = Math.PI * 0.10;     // tilt slightly toward the centre
+    this.group.add(frame);
+
+    // Plaque face
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex, emissive: 0xffffff, emissiveMap: tex,
+      emissiveIntensity: 0.20, roughness: 0.45, metalness: 0.08,
+    });
+    const plaque = new THREE.Mesh(new THREE.PlaneGeometry(4.1, 2.5), mat);
+    plaque.position.set(-6.2, 2.6, wallZ + 0.12);
+    plaque.rotation.y = Math.PI * 0.10;
+    this.group.add(plaque);
+  }
+
+  _renderMoodMirror() {
+    if (!this._mirrorCtx) return;
+    const ctx = this._mirrorCtx;
+    const W = this._mirrorCanvas.width;
+    const H = this._mirrorCanvas.height;
+
+    // Soft cream parchment.
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#fbf3df');
+    bg.addColorStop(1, '#ecdfc0');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    // Sage trim.
+    ctx.strokeStyle = '#7DC9A8';
+    ctx.lineWidth = 6;
+    this._roundRect(ctx, 14, 14, W - 28, H - 28, 32); ctx.stroke();
+
+    // Title row.
+    ctx.fillStyle = '#3a4a40';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = '700 56px "Georgia","Times New Roman",serif';
+    ctx.fillText('Mood Journal', 60, 50);
+    ctx.fillStyle = '#5a6a60';
+    ctx.font = '500 36px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText('心情记录', 60, 116);
+
+    // Total count chip on the top right.
+    const total = this._moodTimeline.length;
+    ctx.font = '500 28px "Inter",sans-serif';
+    ctx.fillStyle = 'rgba(125, 201, 168, 0.18)';
+    this._roundRect(ctx, W - 240, 60, 180, 50, 25); ctx.fill();
+    ctx.fillStyle = '#2c8c5c';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${total} entries`, W - 150, 86);
+
+    // Tally bars.
+    const ids = ['calm', 'happy', 'tired', 'anxious', 'sad'];
+    const max = Math.max(1, ...ids.map((id) => this._moodLog[id].count));
+    let y = 200;
+    const barX = 220, barW = W - barX - 80, rowH = 56;
+    for (const id of ids) {
+      const m = this._moodLog[id];
+      // Emoji + label
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = '36px "Segoe UI Emoji", Arial';
+      ctx.fillStyle = '#3a4a40';
+      ctx.fillText(m.emoji, 60, y + rowH / 2);
+      ctx.font = '600 26px "Inter","PingFang SC",sans-serif';
+      ctx.fillText(`${m.en} · ${m.zh}`, 110, y + rowH / 2);
+      // Bar background
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
+      this._roundRect(ctx, barX, y + 14, barW, 28, 14); ctx.fill();
+      // Bar fill
+      const filled = (m.count / max) * barW;
+      if (filled > 0) {
+        ctx.fillStyle = m.color;
+        this._roundRect(ctx, barX, y + 14, Math.max(filled, 28), 28, 14); ctx.fill();
+      }
+      // Count
+      ctx.fillStyle = '#3a4a40';
+      ctx.textAlign = 'right';
+      ctx.font = '700 24px "Inter",sans-serif';
+      ctx.fillText(String(m.count), W - 80, y + rowH / 2);
+      y += rowH + 8;
+    }
+
+    // Timeline strip (bottom): last entries as colored dots.
+    const stripY = H - 70;
+    ctx.fillStyle = '#3a4a40';
+    ctx.font = '500 22px "Inter","PingFang SC",sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Recent · 最近', 60, stripY);
+    const dotsX0 = 220;
+    const dotsW  = W - dotsX0 - 80;
+    const recent = this._moodTimeline.slice(-30);
+    if (recent.length > 0) {
+      const step = Math.min(20, dotsW / Math.max(1, recent.length));
+      for (let i = 0; i < recent.length; i++) {
+        const m = this._moodLog[recent[i]];
+        ctx.fillStyle = m.color;
+        ctx.beginPath();
+        ctx.arc(dotsX0 + i * step + 8, stripY, 8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      ctx.fillStyle = '#9aa39e';
+      ctx.font = '500 22px "Inter","PingFang SC",sans-serif';
+      ctx.fillText('No entries yet · 还没有记录哦', dotsX0, stripY);
+    }
+
+    this._mirrorTex.needsUpdate = true;
+  }
+
+  // ── Particle ambience (drifting petals + bokeh fireflies) ─
+  _buildParticleField() {
+    // Shared sprite — a soft round disc — used by both layers as a
+    // PointsMaterial map for that "bokeh" look.
+    const sprite = this._makeSoftDiscTexture();
+
+    // Petals — slow downward drift inside a 18×4×18 box.
+    const petalCount = 140;
+    const petalGeom = new THREE.BufferGeometry();
+    const pPos = new Float32Array(petalCount * 3);
+    const pCol = new Float32Array(petalCount * 3);
+    const pVel = new Float32Array(petalCount * 3);
+    const pPhase = new Float32Array(petalCount);
+    for (let i = 0; i < petalCount; i++) {
+      pPos[i * 3 + 0] = (Math.random() - 0.5) * 18;
+      pPos[i * 3 + 1] = Math.random() * 4 + 0.5;
+      pPos[i * 3 + 2] = (Math.random() - 0.5) * 18;
+      // Soft cherry / cream / pink palette.
+      const c = Math.random();
+      if (c < 0.4)      { pCol[i*3]=0.99; pCol[i*3+1]=0.78; pCol[i*3+2]=0.85; } // pink
+      else if (c < 0.75){ pCol[i*3]=1.00; pCol[i*3+1]=0.92; pCol[i*3+2]=0.78; } // cream
+      else              { pCol[i*3]=0.78; pCol[i*3+1]=0.92; pCol[i*3+2]=0.82; } // mint
+      pVel[i*3+0] = (Math.random() - 0.5) * 0.18;
+      pVel[i*3+1] = -0.18 - Math.random() * 0.12;
+      pVel[i*3+2] = (Math.random() - 0.5) * 0.18;
+      pPhase[i]   = Math.random() * Math.PI * 2;
+    }
+    petalGeom.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+    petalGeom.setAttribute('color',    new THREE.BufferAttribute(pCol, 3));
+    const petalMat = new THREE.PointsMaterial({
+      size: 0.12, map: sprite, vertexColors: true,
+      transparent: true, opacity: 0.78,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
+    });
+    const petals = new THREE.Points(petalGeom, petalMat);
+    this.group.add(petals);
+    this._petalPoints = petals;
+    this._petalVel    = pVel;
+    this._petalPhase  = pPhase;
+
+    // Fireflies — gentle orbital bokeh, additive yellow-green.
+    const fireflyCount = 90;
+    const ffGeom = new THREE.BufferGeometry();
+    const fPos = new Float32Array(fireflyCount * 3);
+    const fCol = new Float32Array(fireflyCount * 3);
+    const fOrigin = new Float32Array(fireflyCount * 3);   // orbit centre
+    const fPhase  = new Float32Array(fireflyCount);
+    for (let i = 0; i < fireflyCount; i++) {
+      const cx = (Math.random() - 0.5) * 14;
+      const cy = 1.0 + Math.random() * 2.2;
+      const cz = (Math.random() - 0.5) * 14;
+      fOrigin[i*3] = cx; fOrigin[i*3+1] = cy; fOrigin[i*3+2] = cz;
+      fPos[i*3] = cx; fPos[i*3+1] = cy; fPos[i*3+2] = cz;
+      // Honey-yellow → mint.
+      const c = Math.random();
+      if (c < 0.5) { fCol[i*3]=1.00; fCol[i*3+1]=0.95; fCol[i*3+2]=0.65; }
+      else         { fCol[i*3]=0.78; fCol[i*3+1]=0.98; fCol[i*3+2]=0.86; }
+      fPhase[i] = Math.random() * Math.PI * 2;
+    }
+    ffGeom.setAttribute('position', new THREE.BufferAttribute(fPos, 3));
+    ffGeom.setAttribute('color',    new THREE.BufferAttribute(fCol, 3));
+    const ffMat = new THREE.PointsMaterial({
+      size: 0.16, map: sprite, vertexColors: true,
+      transparent: true, opacity: 0.85,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
+    });
+    const fireflies = new THREE.Points(ffGeom, ffMat);
+    this.group.add(fireflies);
+    this._fireflyPoints = fireflies;
+    this._fireflyOrigin = fOrigin;
+    this._fireflyPhase  = fPhase;
+    this._fireflyMat    = ffMat;
+  }
+
+  _updateParticles(delta) {
+    // Petals: drift downward with subtle horizontal sway, recycle to
+    // the top once they fall below the floor. Cheap O(n) update.
+    const petals = this._petalPoints;
+    if (petals) {
+      const pos = petals.geometry.attributes.position.array;
+      for (let i = 0; i < pos.length / 3; i++) {
+        const ix = i * 3;
+        // Sway from sin(phase) so the motion isn't a straight line.
+        this._petalPhase[i] += delta * 0.6;
+        const sway = Math.sin(this._petalPhase[i]) * 0.10;
+        pos[ix + 0] += (this._petalVel[ix + 0] + sway) * delta;
+        pos[ix + 1] += this._petalVel[ix + 1] * delta;
+        pos[ix + 2] += this._petalVel[ix + 2] * delta;
+        if (pos[ix + 1] < 0.05) {
+          pos[ix + 0] = (Math.random() - 0.5) * 18;
+          pos[ix + 1] = 4.5;
+          pos[ix + 2] = (Math.random() - 0.5) * 18;
+        }
+      }
+      petals.geometry.attributes.position.needsUpdate = true;
+    }
+
+    // Fireflies: orbit a fixed origin in a small circle. Pulse opacity
+    // with the breathing rhythm when a session is running so the room
+    // visibly "breathes" along with the orb.
+    const ff = this._fireflyPoints;
+    if (ff) {
+      const pos = ff.geometry.attributes.position.array;
+      for (let i = 0; i < pos.length / 3; i++) {
+        const ix = i * 3;
+        this._fireflyPhase[i] += delta * 0.5;
+        const t = this._fireflyPhase[i];
+        pos[ix + 0] = this._fireflyOrigin[ix + 0] + Math.cos(t) * 0.45;
+        pos[ix + 1] = this._fireflyOrigin[ix + 1] + Math.sin(t * 1.3) * 0.18;
+        pos[ix + 2] = this._fireflyOrigin[ix + 2] + Math.sin(t) * 0.45;
+      }
+      ff.geometry.attributes.position.needsUpdate = true;
+
+      if (this._fireflyMat) {
+        if (this._sessionRunning) {
+          // Use the same fullness curve the orb uses, ranged 0.55..1.0.
+          this._fireflyMat.opacity = 0.55 + 0.40 * (this._fullness ?? 0);
+        } else {
+          // Free-floating gentle pulse.
+          this._fireflyMat.opacity = 0.70 + 0.15 * Math.sin(performance.now() * 0.0008);
+        }
+      }
+    }
+  }
+
+  _makeSoftDiscTexture() {
+    const D = 64;
+    const cv = document.createElement('canvas');
+    cv.width = D; cv.height = D;
+    const ctx = cv.getContext('2d');
+    const g = ctx.createRadialGradient(D / 2, D / 2, 1, D / 2, D / 2, D / 2);
+    g.addColorStop(0,   'rgba(255,255,255,1)');
+    g.addColorStop(0.4, 'rgba(255,255,255,0.6)');
+    g.addColorStop(1,   'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, D, D);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  // Tiny rounded-rectangle helper (canvas only).
+  _roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
   }
 }
 
@@ -3793,7 +4807,7 @@ class GamesVRRoom extends VRRoom {
 
   // ────────────────────────────────────────────────────────────
   //  Win detection — scan from the just-placed stone in 4 axes.
-  // ────────────────────────────────────────────────────────────
+  // ──────────────────────────��─────────────────────────────────
   _checkWin(row, col, who) {
     const g = this._gomoku;
     const dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];

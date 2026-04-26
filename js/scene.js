@@ -1371,10 +1371,11 @@ export class CampusScene {
           '休闲区是一个家庭影院。\nThe Leisure Lounge — a real home cinema.',
           '想看电影吗？休闲区有大屏幕和零食。\n灵灵会陪你一起看。',
         ],
-        healing: [
-          '疗愈区还没完全建好，\nThe Healing Garden is still in development — soon!',
-          '抱歉，疗愈区暂时不开放，\nstay tuned for the garden.',
-        ],
+  healing: [
+  '想找个地方静一静吗?\n莲莲在疗愈花园陪你做几节深呼吸.',
+  '走累了就去疗愈区, 那里能记录心情、还会有粒子陪你呼吸.\n' +
+  'The Healing Garden — guided breathing + mood journal.',
+  ],
         games: [
           '轻游戏区可以玩五子棋和国际象棋，\n童童会陪你下，并且当裁判。',
           'Game Zone — Gomoku & full chess.\n童童会一边下棋一边碎碎念。',
