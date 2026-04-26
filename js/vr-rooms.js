@@ -3272,9 +3272,10 @@ class HealingVRRoom extends VRRoom {
   build() {
     this._buildSerenityShell(20, 20, 5);
 
-    // 莲莲 — soft mint-sage. Hovers near the breathing orb and stays
-    // there so she reads as a meditation guide rather than a follower.
-    this._buildAICompanion(1.5, 1.4, -1.5, 0xB8E0CE);
+    // 莲莲 — soft mint-sage. Spawns on the player's right at standing
+    // eye height so the moment the headset pops in, she's clearly in
+    // peripheral vision, not 8m away in the centre of the room.
+    this._buildAICompanion(1.4, 1.4, 2.5, 0xB8E0CE);
     this.companion?.setMode?.('idle');
 
     // Exit portal at the front of the room.
@@ -3337,9 +3338,17 @@ class HealingVRRoom extends VRRoom {
   }
 
   getSpawnPoint() {
-    // Drop the player a few metres in front of the orb, between the
-    // cushions and the controls, facing -Z toward the breathing orb.
-    return this.roomPosition.clone().add(new THREE.Vector3(0, 0, 6));
+    // Drop the player just behind the cushions, ~3.5m from the orb,
+    // facing -Z. In VR an 8m gap to the orb made it look like a
+    // distant marble; this brings it into intimate scale (~3.5m
+    // means the 1.0m halo subtends a comfortable ~16° of view).
+    return this.roomPosition.clone().add(new THREE.Vector3(0, 0, 3.5));
+  }
+
+  getLookAtPoint() {
+    // Desktop camera framing: aim it directly at the breathing orb so
+    // the centerpiece is what the player sees on entry.
+    return this.roomPosition.clone().add(new THREE.Vector3(0, 1.6, -2.0));
   }
 
   // ── Lifecycle ──────────────────────────────────────────────
@@ -3538,17 +3547,28 @@ class HealingVRRoom extends VRRoom {
       }
     }
 
-    // Compute a 0..1 "fullness" used to drive scale and emission, where
-    // 0 = fully exhaled and 1 = fully inhaled. Smooth ease so the orb
-    // breathes naturally rather than ramping linearly.
-    const t = this._phaseElapsed / dur;     // 0..1 within current phase
+    // Compute a 0..1 "fullness" used to drive scale and emission. We
+    // ALWAYS produce a value: when a session is running, fullness is
+    // phase-driven (eased); when paused, we synthesise a slow ambient
+    // sine pulse (~6-second period) so the orb is visibly breathing on
+    // entry — the user shouldn't have to find the START button before
+    // they can recognise the centerpiece.
     const ease = (x) => 0.5 - 0.5 * Math.cos(Math.PI * x);
     let fullness;
-    switch (this._phaseIdx) {
-      case 0: fullness = ease(t); break;          // inhale 0 → 1
-      case 1: fullness = 1; break;                 // hold-in
-      case 2: fullness = 1 - ease(t); break;       // exhale 1 → 0
-      default: fullness = 0; break;                // hold-out
+    if (this._sessionRunning) {
+      const t = this._phaseElapsed / dur;     // 0..1 within current phase
+      switch (this._phaseIdx) {
+        case 0: fullness = ease(t); break;          // inhale 0 → 1
+        case 1: fullness = 1; break;                 // hold-in
+        case 2: fullness = 1 - ease(t); break;       // exhale 1 → 0
+        default: fullness = 0; break;                // hold-out
+      }
+    } else {
+      // Ambient gentle breath — full sine wave, range 0.15 .. 0.95 so
+      // the orb never collapses to nothing and never clips at full.
+      const tNow = performance.now() * 0.001;
+      const amb = 0.5 + 0.5 * Math.sin(tNow * (2 * Math.PI) / 6);   // 6s period
+      fullness = 0.15 + amb * 0.80;
     }
 
     // Drive visuals.
@@ -3556,17 +3576,23 @@ class HealingVRRoom extends VRRoom {
       const s = 0.85 + 0.55 * fullness;
       this._orbCore.scale.setScalar(s);
       if (this._orbCoreMat) {
-        this._orbCoreMat.emissiveIntensity = 0.5 + 1.2 * fullness;
+        this._orbCoreMat.emissiveIntensity = 0.55 + 1.30 * fullness;
       }
       this._orbHalo?.scale.setScalar(s * 1.2);
-      if (this._orbHaloMat) this._orbHaloMat.opacity = 0.18 + 0.32 * fullness;
+      if (this._orbHaloMat) this._orbHaloMat.opacity = 0.22 + 0.40 * fullness;
     }
     if (this._floorRing) {
-      const r = 0.8 + 1.7 * fullness;
+      const r = 0.9 + 1.9 * fullness;
       this._floorRing.scale.setScalar(r);
       if (this._floorRingMat) {
-        this._floorRingMat.opacity = 0.25 + 0.50 * fullness;
+        this._floorRingMat.opacity = 0.30 + 0.55 * fullness;
       }
+    }
+    // Pulse the cohabiting point light too so the wood floor + sage
+    // walls visibly brighten on inhale, dim on exhale. This is the
+    // strongest "the room is breathing with you" cue in VR.
+    if (this._orbLight) {
+      this._orbLight.intensity = 0.55 + 1.10 * fullness;
     }
     // Cache fullness for particles to pulse with.
     this._fullness = fullness;
@@ -3650,12 +3676,13 @@ class HealingVRRoom extends VRRoom {
   _buildBreathingOrb() {
     // Floor guidance ring directly under the orb — fades in/out as the
     // user inhales / exhales so the breathing is also legible from the
-    // floor up (helpful in VR where you're often looking down).
+    // floor up (helpful in VR where you're often looking down). Wider
+    // and brighter so it reads from the player's spawn point.
     const ringMat = new THREE.MeshBasicMaterial({
-      color: 0xb6e8d0, transparent: true, opacity: 0.5,
+      color: 0xb6e8d0, transparent: true, opacity: 0.6,
       side: THREE.DoubleSide, depthWrite: false,
     });
-    const ringGeom = new THREE.RingGeometry(0.9, 1.0, 96);
+    const ringGeom = new THREE.RingGeometry(1.05, 1.20, 96);
     const ring = new THREE.Mesh(ringGeom, ringMat);
     ring.rotation.x = -Math.PI / 2;
     ring.position.set(0, 0.015, -2.0);
@@ -3663,35 +3690,40 @@ class HealingVRRoom extends VRRoom {
     this._floorRing = ring;
     this._floorRingMat = ringMat;
 
-    // Soft halo (large, translucent, additive-feeling).
+    // Soft halo (large, translucent, additive-feeling). Bumped from
+    // 0.85m to 1.05m radius so it still reads as an aura even when
+    // the orb is at minimum exhale scale.
     const haloMat = new THREE.MeshBasicMaterial({
-      color: 0xc6f0dc, transparent: true, opacity: 0.30,
+      color: 0xc6f0dc, transparent: true, opacity: 0.32,
       depthWrite: false, side: THREE.DoubleSide,
     });
-    const halo = new THREE.Mesh(new THREE.SphereGeometry(0.85, 32, 24), haloMat);
+    const halo = new THREE.Mesh(new THREE.SphereGeometry(1.05, 32, 24), haloMat);
     halo.position.set(0, 1.6, -2.0);
     this.group.add(halo);
     this._orbHalo = halo;
     this._orbHaloMat = haloMat;
 
     // Glowing core sphere — emissive so it lights the room slightly.
+    // 0.6m → 0.75m so it claims the centre at any spawn distance.
     const coreMat = new THREE.MeshStandardMaterial({
       color: 0xa8d8c0,
       emissive: 0xb8e8d0,
-      emissiveIntensity: 0.6,
+      emissiveIntensity: 0.7,
       roughness: 0.35, metalness: 0.05,
-      transparent: true, opacity: 0.92,
+      transparent: true, opacity: 0.95,
     });
-    const core = new THREE.Mesh(new THREE.SphereGeometry(0.6, 48, 32), coreMat);
+    const core = new THREE.Mesh(new THREE.SphereGeometry(0.75, 48, 32), coreMat);
     core.position.set(0, 1.6, -2.0);
     this.group.add(core);
     this._orbCore = core;
     this._orbCoreMat = coreMat;
 
-    // Tiny point light cohabits with the core for ambient warm wash.
-    const orbLight = new THREE.PointLight(0xc8f0d8, 0.7, 7.5, 2.0);
+    // Brighter cohabiting point light so the breathing pulse visibly
+    // washes the wood floor and sage walls each cycle.
+    const orbLight = new THREE.PointLight(0xc8f0d8, 1.1, 9.0, 2.0);
     orbLight.position.set(0, 1.6, -2.0);
     this.group.add(orbLight);
+    this._orbLight = orbLight;
   }
 
   // ── Phase label (canvas plane floating beside the orb) ────
@@ -3986,25 +4018,51 @@ class HealingVRRoom extends VRRoom {
     tex.anisotropy = 8;
     this._mirrorTex = tex;
 
-    // Frame
+    // The previous version pinned the plaque to the back wall, ~13m
+    // from the player's spawn — that worked on desktop but read as
+    // an unreadable postage stamp in VR. Pull it forward into the
+    // room as a freestanding plaque on the left of the breathing
+    // orb (~5m from the player), framed in dark wood, and tilt it
+    // gently toward the spawn so the camera can read it on entry.
+    const plaqueX = -3.6, plaqueY = 1.55, plaqueZ = -0.6;
+    const yawTowardSpawn = Math.PI * 0.18;     // face the player at +Z
+
     const frameMat = new THREE.MeshStandardMaterial({
       color: 0x6a4a30, roughness: 0.5, metalness: 0.1,
     });
-    const wallZ = -this.roomSize.depth / 2 + 0.04;
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(4.4, 2.8, 0.10), frameMat);
-    frame.position.set(-6.2, 2.6, wallZ + 0.05);
-    frame.rotation.y = Math.PI * 0.10;     // tilt slightly toward the centre
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.7, 0.10), frameMat);
+    frame.position.set(plaqueX, plaqueY, plaqueZ);
+    frame.rotation.y = yawTowardSpawn;
     this.group.add(frame);
 
-    // Plaque face
+    // Plaque face — emissive so the parchment reads even in low light.
     const mat = new THREE.MeshStandardMaterial({
       map: tex, emissive: 0xffffff, emissiveMap: tex,
-      emissiveIntensity: 0.20, roughness: 0.45, metalness: 0.08,
+      emissiveIntensity: 0.30, roughness: 0.45, metalness: 0.08,
     });
-    const plaque = new THREE.Mesh(new THREE.PlaneGeometry(4.1, 2.5), mat);
-    plaque.position.set(-6.2, 2.6, wallZ + 0.12);
-    plaque.rotation.y = Math.PI * 0.10;
+    const plaque = new THREE.Mesh(new THREE.PlaneGeometry(2.45, 1.55), mat);
+    plaque.position.set(plaqueX, plaqueY, plaqueZ + 0.06);
+    plaque.rotation.y = yawTowardSpawn;
+    // Apply the frame's offset to the plaque too: the plane needs to
+    // sit on the +Z face of the frame in its rotated frame, so push it
+    // forward along the rotated-+Z direction.
+    const off = new THREE.Vector3(0, 0, 0.06).applyEuler(plaque.rotation);
+    plaque.position.set(plaqueX + off.x, plaqueY, plaqueZ + off.z);
     this.group.add(plaque);
+
+    // A small wooden stand beneath the plaque so it doesn't look like
+    // it's hovering in space.
+    const standMat = new THREE.MeshStandardMaterial({
+      color: 0x6a4a30, roughness: 0.6, metalness: 0.05,
+    });
+    const standBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.20, 0.32, 0.10, 24), standMat);
+    standBase.position.set(plaqueX, 0.05, plaqueZ);
+    this.group.add(standBase);
+    const standPole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.06, plaqueY - 0.85, 16), standMat);
+    standPole.position.set(plaqueX, (plaqueY - 0.85) / 2 + 0.10, plaqueZ);
+    this.group.add(standPole);
   }
 
   _renderMoodMirror() {
@@ -4134,9 +4192,13 @@ class HealingVRRoom extends VRRoom {
     }
     petalGeom.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
     petalGeom.setAttribute('color',    new THREE.BufferAttribute(pCol, 3));
+    // PointsMaterial with sizeAttenuation in VR scales sprites by
+    // distance, so a 0.12m petal at 4m only paints ~3% of viewport
+    // height — invisible against the wall. 0.30m gives a ~7-8%
+    // footprint at 4m, which reads as a clear drifting petal.
     const petalMat = new THREE.PointsMaterial({
-      size: 0.12, map: sprite, vertexColors: true,
-      transparent: true, opacity: 0.78,
+      size: 0.30, map: sprite, vertexColors: true,
+      transparent: true, opacity: 0.92,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       sizeAttenuation: true,
@@ -4169,8 +4231,8 @@ class HealingVRRoom extends VRRoom {
     ffGeom.setAttribute('position', new THREE.BufferAttribute(fPos, 3));
     ffGeom.setAttribute('color',    new THREE.BufferAttribute(fCol, 3));
     const ffMat = new THREE.PointsMaterial({
-      size: 0.16, map: sprite, vertexColors: true,
-      transparent: true, opacity: 0.85,
+      size: 0.40, map: sprite, vertexColors: true,
+      transparent: true, opacity: 0.95,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       sizeAttenuation: true,
@@ -4223,13 +4285,12 @@ class HealingVRRoom extends VRRoom {
       ff.geometry.attributes.position.needsUpdate = true;
 
       if (this._fireflyMat) {
-        if (this._sessionRunning) {
-          // Use the same fullness curve the orb uses, ranged 0.55..1.0.
-          this._fireflyMat.opacity = 0.55 + 0.40 * (this._fullness ?? 0);
-        } else {
-          // Free-floating gentle pulse.
-          this._fireflyMat.opacity = 0.70 + 0.15 * Math.sin(performance.now() * 0.0008);
-        }
+        // Always pulse with the breathing rhythm — `_fullness` is now
+        // synthesised from a slow ambient sine when no session is
+        // running, so the room breathes whether or not the user has
+        // pressed START. Range 0.50..0.95 keeps the bokeh visible even
+        // at exhale.
+        this._fireflyMat.opacity = 0.50 + 0.45 * (this._fullness ?? 0);
       }
     }
   }
@@ -4689,7 +4750,7 @@ class GamesVRRoom extends VRRoom {
   // ──────────────────────────────────────���─────────────────────
   //  Make the giant floor board itself a click target. The handler
   //  is always installed but only does work while a game is active.
-  // ───────────────────────���────────────────────────────────────
+  // ───────────────��───────���────────────────────────────────────
   _enableBoardClick() {
     const top = this._boardTopMesh;
     if (!top) return;
@@ -5663,7 +5724,7 @@ class GamesVRRoom extends VRRoom {
   //  first; AI plays black at z = -. All piece geometries and
   //  materials are created once in `_buildChessAssets()` and cloned
   //  per-piece so first move is responsive (no run-time alloc).
-  // ════════════════════════════════════════════════════════════
+  // ════════════════════════════════════════════════════���═══════
 
   // ── Asset prep: lathe-based bodies + composite tops ────────
   _buildChessAssets() {
@@ -6500,7 +6561,7 @@ class GamesVRRoom extends VRRoom {
     return s;
   }
 
-  // ────────────────────────────────────────────────────────────
+  // ���───────────────────────────────────────────────────────────
   //  Move generation + check detection
   // ────────────────────────────────────────────────────────────
   _chessLegalMoves(board, color) {
