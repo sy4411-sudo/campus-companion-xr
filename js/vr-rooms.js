@@ -2,8 +2,8 @@
  * VR Rooms - With interactive features
  */
 import * as THREE from 'three';
-import { AICompanion } from './ai-companion.js';
-import { mountTripoModel } from './tripo-loader.js';
+import { AICompanion }     from './ai-companion.js?v=20260426-2';
+import { mountTripoModel } from './tripo-loader.js?v=20260426-2';
 
 // ============================================================
 //  Base VR Room Class
@@ -939,60 +939,1158 @@ class ChatVRRoom extends VRRoom {
 // ============================================================
 //  Study Room (学习区)
 // ============================================================
+/**
+ * StudyVRRoom — interactive classroom mirroring LeisureVRRoom's architecture.
+ *
+ * Layout (room is 18m × 16m × 6m, back wall at z = -8):
+ *   • Back wall  — large 6×3m whiteboard driven by a CanvasTexture that
+ *                  switches between idle / lesson / quiz / result modes.
+ *   • Left wall  — six clickable "AR study cards" arranged in a 3×2 grid,
+ *                  each picking a topic for the AI tutor to teach.
+ *   • In front of the board — A/B/C/D answer pad (visible only in quiz
+ *                  mode) plus a 4-button control bar (EXPLAIN / QUIZ /
+ *                  HINT / NEXT) reachable via VR controller raycast.
+ *   • Floor      — six tripo desks + chairs in two rows facing the board.
+ *   • Companion  — 绘绘 (mint-teal AICompanion orb): patient teacher voice.
+ *
+ * The companion's bubble uses the same widget the chat zone uses; nothing
+ * leaks to the desktop chat panel. A static lesson + quiz bank lives in
+ * `_initLessons()` so the room works fully offline (no API calls needed).
+ */
 class StudyVRRoom extends VRRoom {
   constructor(scene, options = {}) {
     super(scene, options);
+
+    // ── Companion follow + chatter state (mirror of leisure / chat) ──
+    // Same shape as LeisureVRRoom: convert player world pos → room-local,
+    // place 绘绘 at a comfortable side-and-slightly-forward offset so she
+    // reads as walking the player through each lesson.
+    this._studentLocal = new THREE.Vector3();
+    this._followOffset = new THREE.Vector3(1.4, -0.45, 0.6);
+    this._idleTimer    = null;
+    this._greetTimer   = null;
+    this._lastSaidAt   = 0;
+
+    // ── Lesson / quiz state machine ───────────────────────────
+    //  'idle'    — no topic selected; companion suggests picking a card.
+    //  'lesson'  — board shows topic intro + key bullet points.
+    //  'quiz'    — board shows current question + 4 options, A/B/C/D
+    //              answer pad becomes visible / interactive.
+    //  'result'  — feedback banner after a quiz answer; auto-returns to
+    //              'quiz' on NEXT click.
+    this._currentTopic    = null;     // full topic object
+    this._currentMode     = 'idle';
+    this._currentQuizIdx  = 0;
+    this._lastResultOk    = null;     // last answer correct? (for result UI)
+
+    // ── Whiteboard + answer-pad rendering refs (lazy) ─────────
+    this._boardCanvas  = null;
+    this._boardCtx     = null;
+    this._boardTex     = null;
+    this._boardMesh    = null;
+    this._answerPad    = [];          // 4 button meshes, hidden by default
+
+    // Build the static lesson + quiz bank and the dialogue pools.
+    this._initLessons();
+    this._initStudyLines();
+
     this.build();
   }
 
+  // ── Room construction ──────────────────────────────────────
   build() {
-    this._buildRoom(16, 18, 5, 0xE8E0D0, 0xF0F8FF);
-    this._buildAICompanion(0, 0.5, -4, 0x98B8D8);
-    this._buildExitDoor(0, 0, 8);
-    
-    // Cool lighting
-    const coolLight = new THREE.PointLight(0xE0E8FF, 0.6, 15);
-    coolLight.position.set(0, 4, -2);
-    this.group.add(coolLight);
-    
-    // Whiteboard
-    const boardFrameMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.5 });
-    const boardFrame = new THREE.Mesh(new THREE.BoxGeometry(5, 2.5, 0.1), boardFrameMat);
-    boardFrame.position.set(0, 2.5, -8.9);
-    this.group.add(boardFrame);
-    
-    const boardMat = new THREE.MeshStandardMaterial({ color: 0xFFFFFF, roughness: 0.3 });
-    const board = new THREE.Mesh(new THREE.PlaneGeometry(4.8, 2.3), boardMat);
-    board.position.set(0, 2.5, -8.84);
+    // Bespoke library shell (warm cream walls + oak floor + acoustic
+    // ceiling tiles + cove halo). Replaces the cold base shell so the
+    // room reads as a real seminar room before any prop loads.
+    this._buildLibraryShell(18, 16, 6);
+
+    // 绘绘 — mint-teal companion. Spawns near the right side of the
+    // board so on entry the player sees her drift over toward them.
+    this._buildAICompanion(-5.5, 1.2, 5.0, 0x7DD3C0);
+
+    // Exit portal at the front of the room (z = +7 toward the
+    // entrance), same convention as the other zone rooms.
+    this._buildExitDoor(0, 0, 7);
+
+    // Lighting rig — warm pendant key + soft hemisphere fill +
+    // four pendant point lights along the ceiling for depth.
+    this.group.add(new THREE.HemisphereLight(0xfff0d8, 0x3a2a1a, 0.42));
+    this.group.add(new THREE.AmbientLight(0xffe6c8, 0.20));
+    const pendantPositions = [
+      [-4, 4.6, -3], [ 4, 4.6, -3], [-4, 4.6, 2], [ 4, 4.6, 2],
+    ];
+    for (const [x, y, z] of pendantPositions) {
+      const l = new THREE.PointLight(0xffd9a0, 0.65, 9.0, 1.6);
+      l.position.set(x, y, z);
+      this.group.add(l);
+    }
+
+    // Interactive surfaces (registered via this.interactables so the
+    // desktop click handler and the VR controller raycast both work):
+    this._buildWhiteboard();
+    this._buildAnswerPad();      // A/B/C/D row (hidden until quiz mode)
+    this._buildControlBar();     // EXPLAIN / QUIZ / HINT / NEXT
+    this._buildTopicCards();     // 6 clickable AR study cards on left wall
+
+    // Furniture: six student desks + two flanking bookshelves + a
+    // teacher's lectern up front. All cached on the tripo loader, so
+    // the six desks share a single network fetch.
+    this._buildStudyFurniture();
+
+    // Initialise the whiteboard with the idle slate.
+    this._setBoard('idle');
+
+    this.onReady();
+  }
+
+  // Spawn the player a few metres in front of the entrance, well clear
+  // of the seats and facing the whiteboard.
+  getSpawnPoint() {
+    return this.roomPosition.clone().add(new THREE.Vector3(0, 0, 5));
+  }
+
+  // ── Lifecycle ──────────────────────────────────────────────
+  enter() {
+    super.enter();
+    if (this._greetTimer) clearTimeout(this._greetTimer);
+    this._greetTimer = setTimeout(() => {
+      this._greetTimer = null;
+      if (!this.isActive) return;
+      this._say('greet');
+      this._scheduleIdleChatter(10000 + Math.random() * 7000);
+    }, 1700);
+  }
+
+  exit() {
+    super.exit();
+    if (this._idleTimer)  { clearTimeout(this._idleTimer);  this._idleTimer  = null; }
+    if (this._greetTimer) { clearTimeout(this._greetTimer); this._greetTimer = null; }
+    this.companion?.hideBubble?.();
+    this.companion?.setMode?.('idle');
+    this.companion?.setExpression?.('idle');
+    this.companion?.setFollowTarget?.(null);
+
+    // Reset transient state so a re-entry starts fresh.
+    this._currentTopic   = null;
+    this._currentMode    = 'idle';
+    this._currentQuizIdx = 0;
+    this._lastResultOk   = null;
+    if (this._boardTex) this._setBoard('idle');
+    this._setAnswerPadVisible(false);
+  }
+
+  // Per-frame: pull 绘绘 to the side-of-player offset, clamped inside
+  // the room. Mirrors LeisureVRRoom.updateStudentPosition exactly.
+  updateStudentPosition(worldPos) {
+    if (!this.companion) return;
+    const local = this._studentLocal.copy(worldPos).sub(this.roomPosition);
+    this.companion.lookAtStudent(local.clone());
+
+    const tgt = local.clone().add(this._followOffset);
+    const half  = (this.roomSize?.width || 18) / 2 - 1.0;
+    const halfD = (this.roomSize?.depth || 16) / 2 - 1.0;
+    tgt.x = Math.max(-half,  Math.min(half,  tgt.x));
+    tgt.z = Math.max(-halfD, Math.min(halfD, tgt.z));
+    tgt.y = Math.max(0.6, Math.min(1.6, tgt.y));
+    this.companion.setFollowTarget(tgt);
+  }
+
+  // ── Static lesson + quiz bank ──────────────────────────────
+  // Six topics × three quiz items each. Bilingual question copy keeps
+  // the room useful for both audiences without a server round-trip.
+  _initLessons() {
+    this._topics = [
+      {
+        id: 'algebra', emoji: '➕',
+        en: 'Algebra', zh: '代数 · 一元一次方程',
+        accent: '#FFB870',
+        intro:
+          '我们来解一元一次方程。\n' +
+          'Let\'s work through linear equations together.',
+        keyPoints: [
+          'Move terms across "=" → flip the sign',
+          '左右两边同乘 / 同除一个非零数, 等式仍成立',
+          'Goal: isolate x · 把未知数独立出来',
+        ],
+        quiz: [
+          { q: 'Solve  2x + 5 = 13', zh: '解  2x + 5 = 13',
+            options: ['x = 3', 'x = 4', 'x = 5', 'x = 6'], answer: 1,
+            hint: '先两边同时减 5, 再除以 2.\nSubtract 5 first, then divide by 2.',
+            explain: '2x = 8 → x = 4. 不难吧?' },
+          { q: 'Solve  3(x − 2) = 9', zh: '解  3(x − 2) = 9',
+            options: ['x = 1', 'x = 3', 'x = 5', 'x = 7'], answer: 2,
+            hint: '先除以 3, 再两边加 2.\nDivide both sides by 3 first, then add 2.',
+            explain: 'x − 2 = 3 → x = 5.' },
+          { q: 'If  x + y = 10  and  y = 4, find x', zh: '若 x + y = 10, y = 4, 求 x',
+            options: ['4', '5', '6', '7'], answer: 2,
+            hint: '把 y 代入第一个式子.\nSubstitute y = 4 into the first equation.',
+            explain: 'x + 4 = 10 → x = 6.' },
+        ],
+      },
+      {
+        id: 'geometry', emoji: '📐',
+        en: 'Geometry', zh: '几何 · 三角形与圆',
+        accent: '#9FD8E8',
+        intro:
+          '几何里, 三角形和圆是一切的起点。\n' +
+          'Triangles and circles are where geometry begins.',
+        keyPoints: [
+          'Triangle interior angles sum to 180°',
+          '圆面积 = π · r²; 周长 = 2π · r',
+          'Right triangle: a² + b² = c² (Pythagoras)',
+        ],
+        quiz: [
+          { q: 'Sum of interior angles of a triangle?', zh: '三角形的内角和是多少?',
+            options: ['90°', '180°', '270°', '360°'], answer: 1,
+            hint: '一张纸折成三角形, 三个角合起来是一条直线.',
+            explain: '三角形的三个内角永远加起来是 180°.' },
+          { q: 'Area of a circle with radius 3?', zh: '半径为 3 的圆面积是多少?',
+            options: ['6π', '9π', '12π', '18π'], answer: 1,
+            hint: 'Area = π · r².',
+            explain: 'π · 3² = 9π.' },
+          { q: 'In a right triangle with legs 3 and 4, hypotenuse = ?', zh: '直角三角形两直角边 3 与 4, 斜边是多少?',
+            options: ['5', '6', '7', '√25 + 5'], answer: 0,
+            hint: 'Pythagoras: a² + b² = c².',
+            explain: '3² + 4² = 9 + 16 = 25 → c = 5.' },
+        ],
+      },
+      {
+        id: 'english', emoji: '📖',
+        en: 'English Reading', zh: '英文阅读 · 词义与语法',
+        accent: '#F0A8B8',
+        intro:
+          '阅读不是查每一个生字, 是抓住句子的骨架。\n' +
+          'Reading well means catching the sentence\'s spine, not every word.',
+        keyPoints: [
+          'Skim first for the topic sentence',
+          '注意上下文里的同义词 / 反义词',
+          'Watch tone words — adjectives + adverbs',
+        ],
+        quiz: [
+          { q: 'Choose the synonym of "happy".', zh: '选出 "happy" 的同义词.',
+            options: ['sad', 'joyful', 'angry', 'tired'], answer: 1,
+            hint: '想一想哪个词的情感色彩和 happy 最像.',
+            explain: '"Joyful" 表示快乐的、欢喜的, 是 "happy" 最贴近的同义词.' },
+          { q: '"She gave a brief speech." What does "brief" mean?', zh: '"brief" 在这里是什么意思?',
+            options: ['long', 'short', 'loud', 'quiet'], answer: 1,
+            hint: 'Brief 在描述时间长短.',
+            explain: '"Brief" 表示简短的, 时间不长.' },
+          { q: 'Pick the right preposition: "I am good ___ math."', zh: '选合适的介词: "I am good ___ math."',
+            options: ['in', 'on', 'at', 'with'], answer: 2,
+            hint: 'Good ___ + 学科 / 技能, 是个固定搭配.',
+            explain: '固定搭配是 "good at + 名词", 表示擅长某事.' },
+        ],
+      },
+      {
+        id: 'biology', emoji: '🧬',
+        en: 'Biology', zh: '生物 · 细胞与遗传',
+        accent: '#A8E0A0',
+        intro:
+          '生物从细胞讲起, 再到遗传与生态。\n' +
+          'Biology starts with cells, then heredity and ecosystems.',
+        keyPoints: [
+          'Plants make food via photosynthesis (CO₂ + H₂O + light)',
+          '线粒体是细胞的"能量工厂" (Mitochondria → ATP)',
+          'DNA 由 4 种碱基组成: A, T, C, G',
+        ],
+        quiz: [
+          { q: 'Which organelle is the cell\'s "power plant"?', zh: '哪个细胞器被称作"能量工厂"?',
+            options: ['Nucleus', 'Mitochondrion', 'Ribosome', 'Vacuole'], answer: 1,
+            hint: '它把营养物质变成 ATP.',
+            explain: '线粒体 (mitochondrion) 通过细胞呼吸生成 ATP, 是细胞的"发电站".' },
+          { q: 'Photosynthesis needs all of these EXCEPT?', zh: '光合作用不需要下面哪一项?',
+            options: ['Sunlight', 'Water', 'Carbon dioxide', 'Oxygen'], answer: 3,
+            hint: '想想光合作用产物里有什么.',
+            explain: '光合作用消耗 CO₂ + H₂O + 光, 释放出 O₂; O₂ 是产物而不是原料.' },
+          { q: 'How many bases are in DNA?', zh: 'DNA 由几种碱基组成?',
+            options: ['2', '3', '4', '5'], answer: 2,
+            hint: '记一下: A/T/C/G.',
+            explain: 'DNA 由腺嘌呤 A、胸腺嘧啶 T、胞嘧啶 C、鸟嘌呤 G 这 4 种碱基构成.' },
+        ],
+      },
+      {
+        id: 'history', emoji: '📜',
+        en: 'World History', zh: '历史 · 古代与近代',
+        accent: '#D9B879',
+        intro:
+          '历史不是背年份, 是看一群人为什么做了某个选择。\n' +
+          'History is about why people made the choices they did.',
+        keyPoints: [
+          'Tang Dynasty 唐朝 begins in 618 CE',
+          '活字印刷术: 北宋毕昇 (~1040 CE)',
+          'Apollo 11 lunar landing: July 1969',
+        ],
+        quiz: [
+          { q: 'Which year did the Tang Dynasty begin?', zh: '唐朝建立于哪一年?',
+            options: ['581', '618', '907', '960'], answer: 1,
+            hint: '李渊在隋末称帝, 那一年距 600 不远.',
+            explain: '618 年, 李渊建立唐朝, 定都长安.' },
+          { q: 'Who invented movable-type printing?', zh: '谁发明了活字印刷术?',
+            options: ['蔡伦 Cai Lun', '毕昇 Bi Sheng', '张衡 Zhang Heng', '祖冲之 Zu Chongzhi'], answer: 1,
+            hint: '北宋时期一位工匠.',
+            explain: '北宋毕昇约在 1040 年用胶泥制活字, 大幅提高了印书效率.' },
+          { q: 'Year of the first crewed Moon landing?', zh: '人类首次登月是哪一年?',
+            options: ['1957', '1961', '1969', '1972'], answer: 2,
+            hint: 'Apollo 11.',
+            explain: '1969 年 7 月 20 日, Apollo 11 把 Armstrong 与 Aldrin 送上了月球.' },
+        ],
+      },
+      {
+        id: 'programming', emoji: '💻',
+        en: 'Programming', zh: '编程 · JavaScript 入门',
+        accent: '#A8B8E8',
+        intro:
+          'JavaScript 的有趣之处在于它的"宽松"——\n' +
+          'JS is famously forgiving. That\'s a feature and a trap.',
+        keyPoints: [
+          'typeof null === "object"  (历史遗留 bug)',
+          '"+" 遇到字符串时变成拼接 → "2" + 2 = "22"',
+          'Recursion: 函数调用自己, 但要有终止条件',
+        ],
+        quiz: [
+          { q: 'What does  typeof null  return?', zh: 'typeof null  的结果是什么?',
+            options: ['"null"', '"object"', '"undefined"', '"number"'], answer: 1,
+            hint: '这是一个历史遗留的"bug-as-feature".',
+            explain: '出于历史原因, typeof null 返回 "object" —— 写规范的人当年没改回来.' },
+          { q: 'Result of  2 + "2"  in JavaScript?', zh: 'JavaScript 中 2 + "2" 的结果是?',
+            options: ['4', '"4"', '"22"', 'NaN'], answer: 2,
+            hint: '+ 一旦遇到字符串就会变成拼接.',
+            explain: '"+" 遇到字符串时是拼接而非加法, 数字 2 被转成字符串 "2", 拼接得到 "22".' },
+          { q: 'Which is true about recursion?', zh: '关于递归, 下列哪一项正确?',
+            options: [
+              'It cannot have a base case',
+              'It must call itself with smaller input until a base case',
+              'It always uses less memory than a loop',
+              'It cannot return a value',
+            ], answer: 1,
+            hint: '想想"什么时候停下来".',
+            explain: '递归一定要有基线条件 (base case), 并且每次自调用要让问题规模变小, 否则会栈溢出.' },
+        ],
+      },
+    ];
+  }
+
+  // Bilingual chatter pools for 绘绘. Mirrors leisure's `_idleLines`.
+  _initStudyLines() {
+    this._studyLines = {
+      greet: [
+        '欢迎来到学习区~ 我是绘绘.\n' +
+        'Welcome! I\'m 绘绘. Pick a card on the left wall — I\'ll teach you.',
+        '今天想学点什么? 左边墙上有六张课件卡.\n' +
+        'There are six topic cards on the left wall — pick one to start.',
+      ],
+      idleNoTopic: [
+        '想学什么都行, 选一张卡片我就开讲.\n' +
+        'Pick any card and I\'ll explain it for you.',
+        '我备课很久啦, 别让我闲着哦~\n' +
+        'I\'ve been waiting to teach. Pick a topic anytime.',
+      ],
+      idleInLesson: [
+        '看明白了再点 "QUIZ", 我来出题.\n' +
+        'When you\'re ready, hit QUIZ and I\'ll test you.',
+        '别急, 这一段我可以再讲一遍 —— 点 "EXPLAIN".\n' +
+        'No rush. Click EXPLAIN to recap if you\'d like.',
+      ],
+      idleInQuiz: [
+        '认真选选看~ 点 "HINT" 我会给个提示.\n' +
+        'Take your time. HINT gives you a small clue.',
+      ],
+      pickTopicFirst: [
+        '先选一张课件卡, 我才知道讲什么呢.\n' +
+        'Pick a card first so I know what to teach.',
+      ],
+      explain: [
+        '我来再讲一遍核心要点.\n' +
+        'Let me walk through the key points again.',
+        '记不住没关系, 我们再来一遍.\n' +
+        'It\'s okay if it didn\'t click. Once more, slowly.',
+      ],
+      hintUsed: [
+        '小提示送上 ✦\nHere\'s a hint.',
+      ],
+      noQuizYet: [
+        '现在还没有题目哦, 先点 "QUIZ" 开始.\n' +
+        'No active question yet — tap QUIZ to start one.',
+      ],
+      correct: [
+        '答对啦! 漂亮 ✦\nNice — that\'s correct!',
+        '没错! 这一题你拿下了.\n' +
+        'Exactly. You got it.',
+        '回答完美~\n' +
+        'Perfect answer.',
+      ],
+      wrong: [
+        '差一点点, 再看看选项.\n' +
+        'Almost — give the options another look.',
+        '别慌, 我们一起再分析一遍.\n' +
+        'Don\'t worry. Let\'s think it through together.',
+      ],
+    };
+  }
+
+  // ── Speech helpers (mirror of LeisureVRRoom._say) ─────────
+  _say(category, payload) {
+    if (!this.companion?.say) return;
+    const pool = this._studyLines?.[category];
+    let text;
+    if (Array.isArray(pool) && pool.length) {
+      text = pool[(Math.random() * pool.length) | 0];
+    } else if (typeof payload === 'string') {
+      text = payload;
+    }
+    if (!text) return;
+    this.companion.say(text);
+    this._lastSaidAt = performance.now();
+  }
+
+  // Recursive idle-chatter scheduler (same shape as leisure).
+  _scheduleIdleChatter(initialDelayMs) {
+    if (this._idleTimer) clearTimeout(this._idleTimer);
+    const delay = initialDelayMs ?? (15000 + Math.random() * 9000);
+    this._idleTimer = setTimeout(() => {
+      this._idleTimer = null;
+      if (!this.isActive) return;
+      // Don't pile a fresh idle bubble on top of a recent reaction.
+      if (performance.now() - this._lastSaidAt > 5000) {
+        if      (this._currentMode === 'quiz')   this._say('idleInQuiz');
+        else if (this._currentMode === 'lesson' ||
+                 this._currentMode === 'result') this._say('idleInLesson');
+        else                                     this._say('idleNoTopic');
+      }
+      this._scheduleIdleChatter();
+    }, Math.max(2000, delay));
+  }
+
+  // ── Topic / quiz interactions ──────────────────────────────
+  _startTopic(topic) {
+    this._currentTopic    = topic;
+    this._currentMode     = 'lesson';
+    this._currentQuizIdx  = 0;
+    this._lastResultOk    = null;
+    this._setAnswerPadVisible(false);
+    this._setBoard('lesson');
+    this.companion?.setExpression?.('happy');
+    this._say(null, topic.intro);
+  }
+
+  _startQuiz() {
+    if (!this._currentTopic) {
+      this.companion?.setExpression?.('thinking');
+      this._say('pickTopicFirst');
+      return;
+    }
+    this._currentMode    = 'quiz';
+    this._currentQuizIdx = 0;
+    this._lastResultOk   = null;
+    this._setBoard('quiz');
+    this._setAnswerPadVisible(true);
+    this.companion?.setExpression?.('happy');
+    this._say(null, '出题啦, 看清楚选项哦.\nHere\'s your first question — pick A, B, C or D.');
+  }
+
+  _explain() {
+    if (!this._currentTopic) {
+      this._say('pickTopicFirst');
+      return;
+    }
+    this._currentMode  = 'lesson';
+    this._lastResultOk = null;
+    this._setAnswerPadVisible(false);
+    this._setBoard('lesson');
+    this.companion?.setExpression?.('thinking');
+    this._say('explain');
+  }
+
+  _hint() {
+    if (this._currentMode !== 'quiz' || !this._currentTopic) {
+      this._say('noQuizYet');
+      return;
+    }
+    const item = this._currentTopic.quiz[this._currentQuizIdx];
+    this._say('hintUsed');
+    setTimeout(() => {
+      if (this.isActive) this.companion?.say?.(item.hint);
+    }, 1700);
+  }
+
+  _next() {
+    if (!this._currentTopic) {
+      this._say('pickTopicFirst');
+      return;
+    }
+    if (this._currentMode === 'lesson') { this._startQuiz(); return; }
+    // 'quiz' or 'result' → advance to the next quiz item, cycling at the end.
+    this._currentQuizIdx =
+      (this._currentQuizIdx + 1) % this._currentTopic.quiz.length;
+    this._currentMode  = 'quiz';
+    this._lastResultOk = null;
+    this._setBoard('quiz');
+    this._setAnswerPadVisible(true);
+    this.companion?.setExpression?.('happy');
+    this._say(null, '下一题来咯~\nNext one!');
+  }
+
+  _answer(idx) {
+    if (this._currentMode !== 'quiz' || !this._currentTopic) {
+      this._say('noQuizYet');
+      return;
+    }
+    const item = this._currentTopic.quiz[this._currentQuizIdx];
+    const ok = (idx === item.answer);
+    this._lastResultOk = ok;
+    this._currentMode  = 'result';
+    this._setBoard('result', { picked: idx });
+    this._setAnswerPadVisible(false);
+    if (ok) {
+      this.companion?.setExpression?.('happy');
+      this._say('correct');
+      setTimeout(() => {
+        if (this.isActive) this.companion?.say?.(item.explain);
+      }, 1700);
+    } else {
+      this.companion?.setExpression?.('thinking');
+      this._say('wrong');
+      setTimeout(() => {
+        if (this.isActive) this.companion?.say?.(item.explain);
+      }, 1900);
+    }
+  }
+
+  // ── Library shell (warm cream walls + oak floor + ceiling) ─
+  _buildLibraryShell(width, depth, height) {
+    this.roomSize = { width, depth, height };
+
+    // Floor — warm oak
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0x8a6038, roughness: 0.78, metalness: 0.05,
+    });
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    this.group.add(floor);
+
+    // Walls — soft cream with slight warm tone
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0xf3eadb, roughness: 0.92, side: THREE.DoubleSide,
+    });
+    // Back wall (where the whiteboard mounts)
+    const backWall = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, height), wallMat);
+    backWall.position.set(0, height / 2, -depth / 2);
+    this.group.add(backWall);
+
+    // Side walls
+    const leftWall = new THREE.Mesh(
+      new THREE.PlaneGeometry(depth, height), wallMat.clone());
+    leftWall.rotation.y = Math.PI / 2;
+    leftWall.position.set(-width / 2, height / 2, 0);
+    this.group.add(leftWall);
+
+    const rightWall = new THREE.Mesh(
+      new THREE.PlaneGeometry(depth, height), wallMat.clone());
+    rightWall.rotation.y = -Math.PI / 2;
+    rightWall.position.set(width / 2, height / 2, 0);
+    this.group.add(rightWall);
+
+    // Front wall (opposite the board, around the exit door)
+    const frontWall = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, height), wallMat.clone());
+    frontWall.rotation.y = Math.PI;
+    frontWall.position.set(0, height / 2, depth / 2);
+    this.group.add(frontWall);
+
+    // Ceiling — pale acoustic-tile look
+    const ceilMat = new THREE.MeshStandardMaterial({
+      color: 0xfaf5ea, roughness: 0.95,
+    });
+    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), ceilMat);
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.y = height;
+    this.group.add(ceiling);
+
+    // Wood baseboard ring — subtle warmth at floor level.
+    const baseMat = new THREE.MeshStandardMaterial({
+      color: 0x4a3018, roughness: 0.7,
+    });
+    const front  = new THREE.Mesh(new THREE.BoxGeometry(width, 0.18, 0.06), baseMat);
+    front.position.set(0, 0.09,  depth / 2 - 0.03);
+    this.group.add(front);
+    const back   = new THREE.Mesh(new THREE.BoxGeometry(width, 0.18, 0.06), baseMat);
+    back.position.set(0, 0.09, -depth / 2 + 0.03);
+    this.group.add(back);
+    const lside  = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.18, depth), baseMat);
+    lside.position.set(-width / 2 + 0.03, 0.09, 0);
+    this.group.add(lside);
+    const rside  = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.18, depth), baseMat);
+    rside.position.set( width / 2 - 0.03, 0.09, 0);
+    this.group.add(rside);
+  }
+
+  // ── Whiteboard ─────────────────────────────────────────────
+  // Builds a 6×3m whiteboard on the back wall whose front face is a
+  // CanvasTexture we redraw whenever the lesson state changes.
+  _buildWhiteboard() {
+    const wallZ = -this.roomSize.depth / 2 + 0.02;
+
+    // Frame (dark walnut)
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3a2a18, roughness: 0.6 });
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(6.4, 3.4, 0.12), frameMat);
+    frame.position.set(0, 2.5, wallZ + 0.08);
+    this.group.add(frame);
+
+    // Whiteboard surface — driven by canvas
+    const W = 1280, H = 640;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    const boardMat = new THREE.MeshStandardMaterial({
+      map: tex, emissive: 0xffffff, emissiveMap: tex,
+      emissiveIntensity: 0.18, roughness: 0.35, metalness: 0.05,
+    });
+    const board = new THREE.Mesh(new THREE.PlaneGeometry(6.0, 3.0), boardMat);
+    board.position.set(0, 2.5, wallZ + 0.16);
     this.group.add(board);
-    
-    // Student desks + chairs (cached → 1 fetch for all 6 seats).
+
+    this._boardCanvas = cv;
+    this._boardCtx    = ctx;
+    this._boardTex    = tex;
+    this._boardMesh   = board;
+
+    // Tiny mounting tray below the board (decorative).
+    const trayMat = new THREE.MeshStandardMaterial({ color: 0xc0a070, roughness: 0.4, metalness: 0.4 });
+    const tray = new THREE.Mesh(new THREE.BoxGeometry(6.2, 0.06, 0.18), trayMat);
+    tray.position.set(0, 0.95, wallZ + 0.18);
+    this.group.add(tray);
+  }
+
+  // Re-render the whiteboard for a given mode.
+  // mode: 'idle' | 'lesson' | 'quiz' | 'result'
+  _setBoard(mode, payload) {
+    if (!this._boardCtx) return;
+    const ctx = this._boardCtx;
+    const W = this._boardCanvas.width, H = this._boardCanvas.height;
+
+    // Wipe with a slightly off-white "marker board" tone.
+    ctx.fillStyle = '#fbfaf5';
+    ctx.fillRect(0, 0, W, H);
+
+    // Subtle grid for a real-classroom feel.
+    ctx.strokeStyle = 'rgba(0,0,0,0.045)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < W; x += 40) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let y = 0; y < H; y += 40) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    const topic = this._currentTopic;
+    if (mode === 'idle' || !topic) {
+      // Idle slate: classroom title + how-to.
+      ctx.fillStyle = '#2a2418';
+      ctx.font = '700 92px "Georgia", "Times New Roman", serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Study Room', W / 2, H * 0.30);
+
+      ctx.font = '500 60px "PingFang SC","Microsoft YaHei",sans-serif';
+      ctx.fillStyle = '#5a4830';
+      ctx.fillText('学习区 · 互动课堂', W / 2, H * 0.46);
+
+      // CTA line
+      ctx.font = '500 38px "Inter","Helvetica Neue",sans-serif';
+      ctx.fillStyle = '#7a5a30';
+      ctx.fillText('← Pick a card on the left wall to start', W / 2, H * 0.66);
+      ctx.font = '500 36px "PingFang SC","Microsoft YaHei",sans-serif';
+      ctx.fillStyle = '#7a5a30';
+      ctx.fillText('或选择左墙上的一张课件卡开始', W / 2, H * 0.78);
+
+      this._boardTex.needsUpdate = true;
+      return;
+    }
+
+    // Top accent bar in the topic colour for visual identity.
+    ctx.fillStyle = topic.accent || '#FFB870';
+    ctx.fillRect(0, 0, W, 14);
+
+    // Topic title row (emoji + EN + ZH).
+    ctx.fillStyle = '#2a2418';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = '90px "Segoe UI Emoji", Arial';
+    const emojiX = 60, titleY = 90;
+    ctx.fillText(topic.emoji, emojiX, titleY);
+    ctx.font = '700 64px "Georgia", "Times New Roman", serif';
+    ctx.fillText(topic.en, emojiX + 110, titleY - 6);
+    ctx.font = '500 44px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillStyle = '#6e4a26';
+    ctx.fillText('· ' + topic.zh, emojiX + 110 + ctx.measureText(topic.en).width + 30, titleY + 4);
+
+    // Mode-specific body
+    if (mode === 'lesson') {
+      this._drawLessonBody(ctx, W, H, topic);
+    } else if (mode === 'quiz') {
+      const q = topic.quiz[this._currentQuizIdx];
+      this._drawQuizBody(ctx, W, H, q, this._currentQuizIdx, topic.quiz.length);
+    } else if (mode === 'result') {
+      const q = topic.quiz[this._currentQuizIdx];
+      this._drawResultBody(ctx, W, H, q, this._lastResultOk, payload?.picked);
+    }
+
+    this._boardTex.needsUpdate = true;
+  }
+
+  _drawLessonBody(ctx, W, H, topic) {
+    ctx.fillStyle = '#2a2418';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = '500 36px "Inter","Helvetica Neue",sans-serif';
+
+    let y = 180;
+    const x = 80;
+    ctx.fillStyle = '#3a2a18';
+    ctx.font = '600 38px "Inter","Helvetica Neue",sans-serif';
+    ctx.fillText('Key points · 核心要点', x, y);
+    y += 60;
+
+    ctx.font = '500 32px "Inter","PingFang SC",sans-serif';
+    ctx.fillStyle = '#2a2418';
+    for (const pt of topic.keyPoints) {
+      // Bullet
+      ctx.fillStyle = topic.accent || '#FFB870';
+      ctx.beginPath(); ctx.arc(x + 10, y + 18, 8, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#2a2418';
+      ctx.fillText(pt, x + 36, y);
+      y += 56;
+    }
+
+    // Footer hint to encourage moving to quiz.
+    y = H - 80;
+    ctx.fillStyle = '#7a5a30';
+    ctx.font = '500 28px "Inter","PingFang SC",sans-serif';
+    ctx.fillText('Press QUIZ to test yourself · 按 QUIZ 让我出题', x, y);
+  }
+
+  _drawQuizBody(ctx, W, H, q, qIdx, qTotal) {
+    const x = 80;
+    let y = 180;
+
+    // Question counter chip
+    ctx.fillStyle = 'rgba(122, 90, 48, 0.15)';
+    this._roundRect(ctx, x, y, 240, 46, 23); ctx.fill();
+    ctx.fillStyle = '#7a5a30';
+    ctx.font = '600 26px "Inter","PingFang SC",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`Question ${qIdx + 1} / ${qTotal}`, x + 120, y + 23);
+
+    // Question (EN over ZH)
+    y += 80;
+    ctx.fillStyle = '#2a2418';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = '600 40px "Inter","Helvetica Neue",sans-serif';
+    ctx.fillText(q.q, x, y);
+    y += 55;
+    ctx.fillStyle = '#5a4830';
+    ctx.font = '500 32px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText(q.zh, x, y);
+
+    // Options as a 2×2 grid pinned to the lower half so it feels like
+    // an exam paper rather than a wall of text.
+    const labels = ['A', 'B', 'C', 'D'];
+    const padX = 80, padY = 360;
+    const colW = (W - padX * 2 - 30) / 2;
+    const rowH = 110;
+    for (let i = 0; i < 4; i++) {
+      const cx = padX + (i % 2) * (colW + 30);
+      const cy = padY + ((i / 2) | 0) * (rowH + 20);
+      // Card
+      ctx.fillStyle = 'rgba(255, 248, 234, 1)';
+      this._roundRect(ctx, cx, cy, colW, rowH, 18); ctx.fill();
+      ctx.strokeStyle = 'rgba(122, 90, 48, 0.4)'; ctx.lineWidth = 2;
+      this._roundRect(ctx, cx, cy, colW, rowH, 18); ctx.stroke();
+      // Letter chip
+      ctx.fillStyle = '#7a5a30';
+      ctx.beginPath(); ctx.arc(cx + 38, cy + rowH / 2, 26, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = '700 32px "Inter",sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(labels[i], cx + 38, cy + rowH / 2 + 2);
+      // Option text
+      ctx.fillStyle = '#2a2418';
+      ctx.font = '500 32px "Inter","PingFang SC",sans-serif';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(q.options[i], cx + 80, cy + rowH / 2 + 2);
+    }
+  }
+
+  _drawResultBody(ctx, W, H, q, ok, picked) {
+    // Reuse the quiz layout, then overlay a result banner that highlights
+    // the correct + picked options.
+    const labels = ['A', 'B', 'C', 'D'];
+
+    // Question echo (shorter, since result banner takes vertical space).
+    let y = 180;
+    const x = 80;
+    ctx.fillStyle = '#2a2418';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = '600 38px "Inter","Helvetica Neue",sans-serif';
+    ctx.fillText(q.q, x, y);
+    y += 50;
+    ctx.fillStyle = '#5a4830';
+    ctx.font = '500 30px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText(q.zh, x, y);
+
+    // Banner
+    y = 290;
+    ctx.fillStyle = ok ? 'rgba(72, 160, 110, 0.18)' : 'rgba(200, 80, 80, 0.18)';
+    this._roundRect(ctx, x, y, W - x * 2, 70, 16); ctx.fill();
+    ctx.fillStyle = ok ? '#2c8c5c' : '#a4423c';
+    ctx.font = '700 36px "Inter","PingFang SC",sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(
+      ok ? `✓  Correct! · 答对啦` : `✗  Not quite · 再试一次`,
+      x + 24, y + 35);
+
+    // Options grid with highlight
+    const padX = 80, padY = 400;
+    const colW = (W - padX * 2 - 30) / 2;
+    const rowH = 100;
+    for (let i = 0; i < 4; i++) {
+      const cx = padX + (i % 2) * (colW + 30);
+      const cy = padY + ((i / 2) | 0) * (rowH + 18);
+      const isAnswer = (i === q.answer);
+      const isPicked = (i === picked);
+      // Card fill
+      if (isAnswer) ctx.fillStyle = 'rgba(72, 160, 110, 0.28)';
+      else if (isPicked && !ok) ctx.fillStyle = 'rgba(200, 80, 80, 0.20)';
+      else ctx.fillStyle = 'rgba(255, 248, 234, 1)';
+      this._roundRect(ctx, cx, cy, colW, rowH, 16); ctx.fill();
+      // Border
+      if (isAnswer) ctx.strokeStyle = '#2c8c5c';
+      else if (isPicked && !ok) ctx.strokeStyle = '#a4423c';
+      else ctx.strokeStyle = 'rgba(122, 90, 48, 0.3)';
+      ctx.lineWidth = isAnswer || (isPicked && !ok) ? 3 : 2;
+      this._roundRect(ctx, cx, cy, colW, rowH, 16); ctx.stroke();
+      // Letter chip
+      ctx.fillStyle = isAnswer ? '#2c8c5c' : (isPicked && !ok ? '#a4423c' : '#7a5a30');
+      ctx.beginPath(); ctx.arc(cx + 36, cy + rowH / 2, 24, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = '700 28px "Inter",sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(labels[i], cx + 36, cy + rowH / 2 + 2);
+      // Option text
+      ctx.fillStyle = '#2a2418';
+      ctx.font = '500 30px "Inter","PingFang SC",sans-serif';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(q.options[i], cx + 76, cy + rowH / 2 + 2);
+    }
+  }
+
+  // Tiny rounded-rectangle helper (canvas only).
+  _roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  // ── A/B/C/D answer pad ─────────────────────────────────────
+  // Four buttons in a row directly in front of the whiteboard. Each
+  // one carries a label drawn into a small CanvasTexture and a
+  // userData.onClick that calls _answer(idx). They're hidden until
+  // a quiz is active and shown again on _startQuiz / _next.
+  _buildAnswerPad() {
+    const wallZ = -this.roomSize.depth / 2;
+    const padW = 0.95, padH = 0.55, padD = 0.10;
+    const gap  = 0.18;
+    const barZ = wallZ + 4.4;
+    const barY = 1.45;
+    const labels = ['A', 'B', 'C', 'D'];
+    const colors = ['#3aa56a', '#4a86e0', '#d99a3a', '#a45dc0'];
+    const total = 4 * padW + 3 * gap;
+    let x = -total / 2 + padW / 2;
+
+    const baseMat = new THREE.MeshStandardMaterial({
+      color: 0x1c1a28, roughness: 0.55, metalness: 0.2,
+    });
+
+    for (let i = 0; i < 4; i++) {
+      const tex = this._makeAnswerButtonTexture(labels[i], colors[i]);
+      const faceMat = new THREE.MeshStandardMaterial({
+        map: tex, emissive: 0xffffff, emissiveMap: tex,
+        emissiveIntensity: 0.6, roughness: 0.6, metalness: 0.1,
+      });
+      const pad = new THREE.Mesh(
+        new THREE.BoxGeometry(padW, padH, padD),
+        [baseMat, baseMat, baseMat, baseMat, faceMat, baseMat],
+      );
+      pad.position.set(x, barY, barZ);
+      pad.visible = false;
+      pad.userData.onClick = () => {
+        // Press feedback
+        const z0 = pad.position.z;
+        pad.position.z = z0 - 0.04;
+        setTimeout(() => { pad.position.z = z0; }, 120);
+        this._answer(i);
+      };
+      this.group.add(pad);
+      this.interactables.push(pad);
+      this._answerPad.push(pad);
+      x += padW + gap;
+    }
+  }
+
+  _setAnswerPadVisible(v) {
+    for (const m of this._answerPad) m.visible = !!v;
+  }
+
+  _makeAnswerButtonTexture(letter, accent) {
+    const W = 256, H = 144;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    // Vertical gradient body
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#2a2438');
+    grad.addColorStop(1, '#15101e');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    // Inner border
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 4;
+    ctx.strokeRect(8, 8, W - 16, H - 16);
+    // Big letter
+    ctx.fillStyle = accent;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '900 90px "Inter","Helvetica Neue",sans-serif';
+    ctx.fillText(letter, W / 2, H / 2);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Control bar (EXPLAIN / QUIZ / HINT / NEXT) ─────────────
+  // Nearer the seats (higher z) than the answer pad so the player can
+  // reach both rows comfortably with a VR controller.
+  _buildControlBar() {
+    const padW = 0.95, padH = 0.42, padD = 0.10;
+    const gap  = 0.12;
+    const barZ = -1.6;     // ~1.6m forward of room centre
+    const barY = 1.45;
+    const buttons = [
+      { primary: 'EXPLAIN', secondary: '讲解', action: () => this._explain() },
+      { primary: 'QUIZ',    secondary: '出题', action: () => this._startQuiz() },
+      { primary: 'HINT',    secondary: '提示', action: () => this._hint() },
+      { primary: 'NEXT',    secondary: '下一题', action: () => this._next() },
+    ];
+    const total = buttons.length * padW + (buttons.length - 1) * gap;
+    let x = -total / 2 + padW / 2;
+
+    const baseMat = new THREE.MeshStandardMaterial({
+      color: 0x1c1a28, roughness: 0.55, metalness: 0.2,
+    });
+    for (const def of buttons) {
+      const tex = this._makeRemoteButtonTexture(def.primary, def.secondary);
+      const faceMat = new THREE.MeshStandardMaterial({
+        map: tex, emissive: 0xffffff, emissiveMap: tex,
+        emissiveIntensity: 0.6, roughness: 0.6, metalness: 0.1,
+      });
+      const pad = new THREE.Mesh(
+        new THREE.BoxGeometry(padW, padH, padD),
+        [baseMat, baseMat, baseMat, baseMat, faceMat, baseMat],
+      );
+      pad.position.set(x, barY, barZ);
+      pad.userData.onClick = () => {
+        const z0 = pad.position.z;
+        pad.position.z = z0 - 0.04;
+        setTimeout(() => { pad.position.z = z0; }, 120);
+        def.action?.();
+      };
+      this.group.add(pad);
+      this.interactables.push(pad);
+      x += padW + gap;
+    }
+  }
+
+  // ── AR study cards (left wall, 3×2 grid) ───────────────────
+  // Six clickable courseware cards. Each card is a thin plane facing
+  // +X (player's right when entering) drawn from a CanvasTexture so
+  // it shows the topic emoji + EN + ZH + a "Tap to start" footer.
+  _buildTopicCards() {
+    const wallX = -this.roomSize.width / 2 + 0.05;
+    // 3 z-columns, 2 y-rows. Cards are 1.3w × 1.0h.
+    const cols = [-3.2, 0, 3.2];
+    const rows = [3.1, 1.7];
+    const cardW = 1.3, cardH = 1.0;
+    let i = 0;
+    for (const y of rows) {
+      for (const z of cols) {
+        if (i >= this._topics.length) return;
+        const topic = this._topics[i++];
+        const tex = this._makeTopicCardTexture(topic);
+        const mat = new THREE.MeshStandardMaterial({
+          map: tex, emissive: 0xffffff, emissiveMap: tex,
+          emissiveIntensity: 0.25, roughness: 0.45, metalness: 0.05,
+          transparent: true,
+        });
+        // Frame plane (slightly larger, dark backing for depth)
+        const frameMat = new THREE.MeshStandardMaterial({
+          color: 0x2a2018, roughness: 0.6,
+        });
+        const frame = new THREE.Mesh(
+          new THREE.PlaneGeometry(cardW + 0.08, cardH + 0.08), frameMat);
+        frame.position.set(wallX + 0.01, y, z);
+        frame.rotation.y = Math.PI / 2;        // face +X (into the room)
+        this.group.add(frame);
+
+        const card = new THREE.Mesh(new THREE.PlaneGeometry(cardW, cardH), mat);
+        card.position.set(wallX + 0.025, y, z);
+        card.rotation.y = Math.PI / 2;
+        card.userData.onClick = () => {
+          // Tiny pop animation: nudge forward then back.
+          const x0 = card.position.x;
+          card.position.x = x0 + 0.04;
+          setTimeout(() => { card.position.x = x0; }, 140);
+          this._startTopic(topic);
+        };
+        this.group.add(card);
+        this.interactables.push(card);
+      }
+    }
+  }
+
+  _makeTopicCardTexture(topic) {
+    const W = 384, H = 288;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Card body — soft cream with a top accent stripe in topic colour.
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#fff5dd');
+    grad.addColorStop(1, '#f0e1bf');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = topic.accent || '#FFB870';
+    ctx.fillRect(0, 0, W, 12);
+
+    // Frame
+    ctx.strokeStyle = 'rgba(122, 90, 48, 0.5)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(6, 6, W - 12, H - 12);
+
+    // Emoji medallion
+    const medX = 70, medY = H * 0.42, medR = 38;
+    ctx.fillStyle = topic.accent || '#FFB870';
+    ctx.beginPath(); ctx.arc(medX, medY, medR, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '50px "Segoe UI Emoji", Arial';
+    ctx.fillText(topic.emoji, medX, medY + 4);
+
+    // EN title
+    ctx.fillStyle = '#2a2418';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.font = '700 36px "Georgia", "Times New Roman", serif';
+    ctx.fillText(topic.en, 130, 56);
+
+    // ZH subtitle
+    ctx.fillStyle = '#6e4a26';
+    ctx.font = '500 24px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText(topic.zh, 130, 102);
+
+    // CTA chip
+    const chipY = H - 64;
+    ctx.fillStyle = topic.accent || '#FFB870';
+    this._roundRect(ctx, 24, chipY, W - 48, 40, 20); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '600 22px "Inter","PingFang SC",sans-serif';
+    ctx.fillText('Tap to start · 点我开课', W / 2, chipY + 20);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Furniture (desks + bookshelves + lectern) ─────────────
+  _buildStudyFurniture() {
+    // Six student desks + chairs in 2 rows × 3 cols, facing the board.
+    // Tripo loader convention: rotationY = 0 → model front faces -Z, so
+    // desks are placed with Y rotation = 0 to face the back wall.
     for (let row = 0; row < 2; row++) {
       for (let col = -1; col <= 1; col++) {
         mountTripoModel(this.group, 'student_desk_chair', {
-          position: [col * 2.5, 0, 3 + row * 2],
-          rotationY: Math.PI,           // face the whiteboard
+          position: [col * 2.6, 0, 1.2 + row * 2.0],
+          rotationY: 0,
           targetSize: 1.4,
           yAlign: 'bottom',
         });
       }
     }
-
-    // Teacher lectern.
-    mountTripoModel(this.group, 'lectern_oak',
-      { position: [0, 0, -5], targetSize: 2.0, yAlign: 'bottom' });
-
-    // Two side bookshelves (cached).
-    mountTripoModel(this.group, 'bookshelf_classroom',
-      { position: [-7, 0, 0], rotationY: Math.PI / 2, targetSize: 2.6, yAlign: 'bottom' });
-    mountTripoModel(this.group, 'bookshelf_classroom',
-      { position: [7, 0, 0], rotationY: -Math.PI / 2, targetSize: 2.6, yAlign: 'bottom' });
-
-    this.onReady();
+    // Teacher's lectern up front, off-centre so it doesn't block the
+    // whiteboard sightline from the desks.
+    mountTripoModel(this.group, 'lectern_oak', {
+      position: [4.0, 0, -4.5], rotationY: -Math.PI / 4,
+      targetSize: 1.8, yAlign: 'bottom',
+    });
+    // Bookshelves on the right wall (left wall is taken by the cards).
+    mountTripoModel(this.group, 'bookshelf_classroom', {
+      position: [7.4, 0, -3.5], rotationY: -Math.PI / 2,
+      targetSize: 2.6, yAlign: 'bottom',
+    });
+    mountTripoModel(this.group, 'bookshelf_classroom', {
+      position: [7.4, 0,  3.5], rotationY: -Math.PI / 2,
+      targetSize: 2.6, yAlign: 'bottom',
+    });
   }
 
-  getSpawnPoint() {
-    return this.roomPosition.clone().add(new THREE.Vector3(0, 0, 5));
+  // Reuse the same pill-button face texture style the leisure room
+  // uses for its remote, so the two zones feel like the same product.
+  _makeRemoteButtonTexture(primary, secondary) {
+    const W = 256, H = 128;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#2a2440');
+    grad.addColorStop(1, '#171328');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(150, 145, 220, 0.45)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(6, 6, W - 12, H - 12);
+    ctx.fillStyle = '#f1ecff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 38px "Segoe UI","Inter",Arial,sans-serif';
+    ctx.fillText(primary, W / 2, H / 2 - 10);
+    ctx.fillStyle = 'rgba(195, 188, 230, 0.78)';
+    ctx.font = '500 22px "PingFang SC","Microsoft YaHei",Arial,sans-serif';
+    ctx.fillText(secondary, W / 2, H / 2 + 28);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
   }
 }
 
@@ -2079,57 +3177,1153 @@ class LeisureVRRoom extends VRRoom {
 // ============================================================
 //  Healing Room (疗愈区)
 // ============================================================
+/**
+ * HealingVRRoom — guided breathing + mood journal + ambient particles.
+ *
+ * Architectural mirror of LeisureVRRoom / StudyVRRoom (custom shell, AI
+ * companion, interactables registered via `userData.onClick`, per-frame
+ * `update(delta)` hook). What's unique here:
+ *
+ *   • Breathing orb       — translucent sphere + emissive halo + a floor
+ *                           guidance ring whose radius and brightness
+ *                           track a 4-phase breathing pattern (inhale →
+ *                           hold → exhale → hold). The on-screen phase
+ *                           label reads "吸气 / Inhale" etc., and the
+ *                           companion 莲莲 quietly cues the player at
+ *                           each transition.
+ *   • Pattern presets     — START / PAUSE / NATURAL (4-4-6-2) / BOX
+ *                           (4-4-4-4) / 4-7-8 (Dr. Weil).
+ *   • Mood stones         — five clickable floor stones (calm, happy,
+ *                           tired, anxious, sad). Tapping logs the mood
+ *                           into a session journal that's mirrored on a
+ *                           wall plaque (tally bars + colour-dot
+ *                           timeline). Session-only — no persistence,
+ *                           per the project's "no localStorage" rule.
+ *   • Particle ambience   — two THREE.Points layers: drifting cherry-
+ *                           blossom petals (slow downward sway) and a
+ *                           swirling firefly bokeh layer that gently
+ *                           pulses with the breathing rhythm when a
+ *                           session is active.
+ *   • Companion 莲莲       — soft mint-sage orb, doesn't follow the
+ *                           player around (a meditation guide should
+ *                           hold the centre). She turns to watch the
+ *                           player and speaks softly at phase changes.
+ */
 class HealingVRRoom extends VRRoom {
   constructor(scene, options = {}) {
     super(scene, options);
+
+    // ── Breathing-session state machine ────────────────────────
+    // Patterns are [inhale, holdIn, exhale, holdOut] in seconds.
+    this._patterns = {
+      natural: { id: 'natural', en: 'Natural', zh: '自然 4-4-6-2', durations: [4, 4, 6, 2] },
+      box:     { id: 'box',     en: 'Box',     zh: '盒式 4-4-4-4', durations: [4, 4, 4, 4] },
+      '478':   { id: '478',     en: '4-7-8',   zh: '4-7-8 法',     durations: [4, 7, 8, 1] },
+    };
+    this._sessionRunning = false;
+    this._currentPattern = this._patterns.natural;
+    this._phaseIdx       = 0;     // 0=inhale, 1=holdIn, 2=exhale, 3=holdOut
+    this._phaseElapsed   = 0;     // seconds in the current phase
+    this._cycleCount     = 0;     // completed full cycles so far
+
+    // ── Mood log (session-only) ────────────────────────────────
+    this._moodLog = {
+      calm:    { count: 0, en: 'Calm',    zh: '平静', emoji: '🌿', color: '#7DC9A8' },
+      happy:   { count: 0, en: 'Happy',   zh: '开心', emoji: '☀️', color: '#F4C36C' },
+      tired:   { count: 0, en: 'Tired',   zh: '疲惫', emoji: '🌙', color: '#9FB0D8' },
+      anxious: { count: 0, en: 'Anxious', zh: '焦虑', emoji: '🌧️', color: '#C9A8E0' },
+      sad:     { count: 0, en: 'Sad',     zh: '低落', emoji: '💧', color: '#7AB8D8' },
+    };
+    this._moodTimeline = [];     // array of mood ids, oldest → newest
+    this._moodMirrorDirty = true;
+
+    // ── Companion follow / chatter timers ──────────────────────
+    // 莲莲 stays put (meditation guide), so unlike Study / Leisure she
+    // doesn't get a side-of-player follow target — only `lookAtStudent`
+    // turns her head. Idle chatter is sparser and only when no session.
+    this._studentLocal = new THREE.Vector3();
+    this._idleTimer    = null;
+    this._greetTimer   = null;
+    this._lastSaidAt   = 0;
+
+    // ── Visual refs filled in by build() ───────────────────────
+    this._orbCore      = null;   // glowing core sphere
+    this._orbHalo      = null;   // outer translucent shell
+    this._orbHaloMat   = null;
+    this._orbCoreMat   = null;
+    this._floorRing    = null;   // expanding/contracting floor guide
+    this._floorRingMat = null;
+    this._phaseLabel   = null;   // floating canvas plane near orb
+    this._phaseCanvas  = null;
+    this._phaseCtx     = null;
+    this._phaseTex     = null;
+    this._mirrorCanvas = null;
+    this._mirrorCtx    = null;
+    this._mirrorTex    = null;
+    this._petalPoints  = null;   // THREE.Points — drifting petals
+    this._fireflyPoints = null;  // THREE.Points — bokeh fireflies
+    this._patternBtns  = [];     // pattern preset buttons (for highlight)
+
+    this._initLines();
     this.build();
   }
 
+  // ── Room construction ──────────────────────────────────────
   build() {
-    this._buildRoom(18, 18, 5, 0xE8DCC8, 0xD4E6D4);
-    this._buildAICompanion(2, 0.5, 0, 0x98C8A0);
-    this._buildExitDoor(0, 0, 8);
-    
-    // Soft natural lighting
-    const warmLight = new THREE.PointLight(0xFFF5E1, 0.6, 15);
-    warmLight.position.set(0, 4, 0);
-    this.group.add(warmLight);
-    
-    // Zen rock garden composition.
+    this._buildSerenityShell(20, 20, 5);
+
+    // 莲莲 — soft mint-sage. Spawns on the player's right at standing
+    // eye height so the moment the headset pops in, she's clearly in
+    // peripheral vision, not 8m away in the centre of the room.
+    this._buildAICompanion(1.4, 1.4, 2.5, 0xB8E0CE);
+    this.companion?.setMode?.('idle');
+
+    // Exit portal at the front of the room.
+    this._buildExitDoor(0, 0, 9);
+
+    // Lighting: warm hemisphere fill + four soft pendant lights.
+    this.group.add(new THREE.HemisphereLight(0xfff2dc, 0x2a3a30, 0.55));
+    this.group.add(new THREE.AmbientLight(0xffe8d0, 0.20));
+    for (const [x, z] of [[-5, -3], [5, -3], [-5, 3], [5, 3]]) {
+      const l = new THREE.PointLight(0xffe6c8, 0.5, 9, 1.6);
+      l.position.set(x, 4.4, z);
+      this.group.add(l);
+    }
+
+    // Breathing centerpiece + UI plaques + interactables.
+    this._buildBreathingOrb();
+    this._buildPhaseLabel();
+    this._buildSessionControls();      // START / PAUSE / NATURAL / BOX / 4-7-8
+    this._buildMoodStones();
+    this._buildMoodMirror();           // wall plaque rendered from journal
+    this._buildParticleField();        // drifting petals + bokeh fireflies
+
+    // Garden props (carried over from the previous static layout, but
+    // pulled to the perimeter so the breathing orb owns the centre).
     mountTripoModel(this.group, 'zen_rock_garden',
-      { position: [-3, 0, -4], targetSize: 3.0, yAlign: 'bottom' });
-
-    // Meditation cushions (cached → 1 fetch for all 3).
-    mountTripoModel(this.group, 'cushion_zafu',
-      { position: [0, 0, 4], targetSize: 0.6, yAlign: 'bottom' });
-    mountTripoModel(this.group, 'cushion_zafu',
-      { position: [-2, 0, 3], targetSize: 0.6, yAlign: 'bottom' });
-    mountTripoModel(this.group, 'cushion_zafu',
-      { position: [2, 0, 3], targetSize: 0.6, yAlign: 'bottom' });
-
-    // Bamboo plants in clay pots (cached).
+      { position: [-7.0, 0, -7.0], rotationY: Math.PI * 0.15,
+        targetSize: 3.0, yAlign: 'bottom' });
+    mountTripoModel(this.group, 'tsukubai',
+      { position: [ 7.0, 0, -6.5], rotationY: -Math.PI * 0.25,
+        targetSize: 1.4, yAlign: 'bottom' });
+    mountTripoModel(this.group, 'bonsai_tree',
+      { position: [ 0.0, 0, -8.5], targetSize: 1.2, yAlign: 'bottom' });
     for (let i = 0; i < 3; i++) {
       mountTripoModel(this.group, 'bamboo_pot', {
-        position: [-8 + i * 0.8, 0, -8],
+        position: [-9.2, 0, -3 + i * 3],
         rotationY: Math.random() * Math.PI * 2,
-        targetSize: 1.6,
-        yAlign: 'bottom',
+        targetSize: 1.6, yAlign: 'bottom',
+      });
+      mountTripoModel(this.group, 'bamboo_pot', {
+        position: [ 9.2, 0, -3 + i * 3],
+        rotationY: Math.random() * Math.PI * 2,
+        targetSize: 1.6, yAlign: 'bottom',
+      });
+    }
+    // Cushions in a small arc facing the orb so the player has a
+    // visual cue for "this is where you sit and breathe".
+    for (let i = -1; i <= 1; i++) {
+      mountTripoModel(this.group, 'cushion_zafu', {
+        position: [i * 1.6, 0, 1.5],
+        rotationY: Math.PI,        // facing -Z (toward the orb)
+        targetSize: 0.6, yAlign: 'bottom',
       });
     }
 
-    // Bonsai tree centerpiece.
-    mountTripoModel(this.group, 'bonsai_tree',
-      { position: [0, 0, -7], targetSize: 1.2, yAlign: 'bottom' });
-
-    // Stone water feature.
-    mountTripoModel(this.group, 'tsukubai',
-      { position: [5, 0, -5], targetSize: 1.4, yAlign: 'bottom' });
+    this._setPattern('natural', /*announce=*/false);
+    this._renderPhaseLabel();
+    this._renderMoodMirror();
 
     this.onReady();
   }
 
   getSpawnPoint() {
-    return this.roomPosition.clone().add(new THREE.Vector3(0, 0, 5));
+    // Drop the player just behind the cushions, ~3.5m from the orb,
+    // facing -Z. In VR an 8m gap to the orb made it look like a
+    // distant marble; this brings it into intimate scale (~3.5m
+    // means the 1.0m halo subtends a comfortable ~16° of view).
+    return this.roomPosition.clone().add(new THREE.Vector3(0, 0, 3.5));
+  }
+
+  getLookAtPoint() {
+    // Desktop camera framing: aim it directly at the breathing orb so
+    // the centerpiece is what the player sees on entry.
+    return this.roomPosition.clone().add(new THREE.Vector3(0, 1.6, -2.0));
+  }
+
+  // ── Lifecycle ──────────────────────────────────────────────
+  enter() {
+    super.enter();
+    if (this._greetTimer) clearTimeout(this._greetTimer);
+    this._greetTimer = setTimeout(() => {
+      this._greetTimer = null;
+      if (!this.isActive) return;
+      this._say('greet');
+      this._scheduleIdleChatter(14000 + Math.random() * 8000);
+    }, 1800);
+  }
+
+  exit() {
+    super.exit();
+    if (this._idleTimer)  { clearTimeout(this._idleTimer);  this._idleTimer  = null; }
+    if (this._greetTimer) { clearTimeout(this._greetTimer); this._greetTimer = null; }
+    this._sessionRunning = false;
+    this.companion?.hideBubble?.();
+    this.companion?.setExpression?.('idle');
+  }
+
+  // Per-frame: drive the breathing orb, particles, mirror redraw, and
+  // turn the companion to face the player. Mirror super.update so the
+  // companion's own animation keeps running.
+  update(delta, camWorld) {
+    super.update(delta, camWorld);
+    this._updateBreathing(delta);
+    this._updateParticles(delta);
+    if (this._moodMirrorDirty) {
+      this._renderMoodMirror();
+      this._moodMirrorDirty = false;
+    }
+  }
+
+  // Companion turns (but doesn't translate) toward the player.
+  updateStudentPosition(worldPos) {
+    if (!this.companion) return;
+    const local = this._studentLocal.copy(worldPos).sub(this.roomPosition);
+    this.companion.lookAtStudent(local.clone());
+  }
+
+  // ── Speech helpers ─────────────────────────────────────────
+  _initLines() {
+    this._lines = {
+      greet: [
+        '欢迎来到疗愈花园~ 我是莲莲.\n' +
+        'Welcome. I\'m 莲莲. Take a breath, you\'re safe here.',
+        '想做几节呼吸吗? 按下 START, 我陪你.\n' +
+        'Press START whenever you\'re ready — I\'ll pace it with you.',
+      ],
+      idle: [
+        '随时按 START, 我陪你呼吸.\n' +
+        'Whenever you\'re ready, hit START.',
+        '左右两边的小石头可以记录心情, 试试看?\n' +
+        'The stones around the orb log your mood — feel free to tap one.',
+        '深呼吸一下, 慢一点也没关系.\n' +
+        'Take a slow breath. There\'s no rush.',
+      ],
+      idleSession: [
+        '跟着光圈, 慢慢地~\n' +
+        'Just follow the ring. Slow and steady.',
+      ],
+      patternChanged: [
+        '换成新的节奏啦.\n' +
+        'New pattern set.',
+      ],
+      sessionStart: [
+        '开始啦. 让肩膀放下来.\n' +
+        'Beginning. Let your shoulders drop.',
+        '一起来 — 鼻吸口呼.\n' +
+        'Here we go — in through the nose, out through the mouth.',
+      ],
+      sessionPause: [
+        '先停一下, 不急.\n' +
+        'Pausing. Take your time.',
+      ],
+      // Cycle prompts — kept very short so they don't crowd the bubble.
+      inhale:  ['吸气 ~\nBreathe in ~'],
+      holdIn:  ['屏住 ~\nHold ~'],
+      exhale:  ['呼气 ~\nLet it out ~'],
+      holdOut: ['放松 ~\nRest ~'],
+      cycleMilestone: [
+        '已经做完五个回合啦, 你做得很好.\n' +
+        'Five cycles done — beautifully paced.',
+      ],
+      moodAck: {
+        calm:    '记下了, "平静" ✦\nLogged: calm. Glad to hear it.',
+        happy:   '记下了, "开心" ☀\nLogged: happy. Hold onto this feeling.',
+        tired:   '记下了, "疲惫" 🌙\nLogged: tired. Be gentle with yourself.',
+        anxious: '记下了, "焦虑" ☁\n' +
+                 'Logged: anxious. Try a few slow breaths with me?',
+        sad:     '记下了, "低落" 💧\nLogged: sad. I\'m here.',
+      },
+    };
+  }
+
+  _say(category, payload) {
+    if (!this.companion?.say) return;
+    const pool = this._lines?.[category];
+    let text;
+    if (Array.isArray(pool) && pool.length) {
+      text = pool[(Math.random() * pool.length) | 0];
+    } else if (typeof payload === 'string') {
+      text = payload;
+    } else if (pool && typeof pool === 'object' && payload) {
+      text = pool[payload];
+    }
+    if (!text) return;
+    this.companion.say(text);
+    this._lastSaidAt = performance.now();
+  }
+
+  _scheduleIdleChatter(initialDelayMs) {
+    if (this._idleTimer) clearTimeout(this._idleTimer);
+    const delay = initialDelayMs ?? (18000 + Math.random() * 12000);
+    this._idleTimer = setTimeout(() => {
+      this._idleTimer = null;
+      if (!this.isActive) return;
+      // Avoid talking over a recent prompt.
+      if (performance.now() - this._lastSaidAt > 6000) {
+        this._say(this._sessionRunning ? 'idleSession' : 'idle');
+      }
+      this._scheduleIdleChatter();
+    }, Math.max(2500, delay));
+  }
+
+  // ── Breathing session ──────────────────────────────────────
+  _setPattern(id, announce = true) {
+    const p = this._patterns[id] || this._patterns.natural;
+    this._currentPattern = p;
+    // Reset phase to start of cycle so the new rhythm starts cleanly.
+    this._phaseIdx     = 0;
+    this._phaseElapsed = 0;
+    // Visual highlight on the pattern button row.
+    for (const btn of this._patternBtns) {
+      btn.userData.setActive?.(btn.userData.patternId === p.id);
+    }
+    this._renderPhaseLabel();
+    if (announce) this._say('patternChanged');
+  }
+
+  _toggleSession(forceState) {
+    const target = (typeof forceState === 'boolean')
+      ? forceState : !this._sessionRunning;
+    if (target === this._sessionRunning) return;
+    this._sessionRunning = target;
+    if (target) {
+      this._phaseIdx     = 0;
+      this._phaseElapsed = 0;
+      this._cycleCount   = 0;
+      this.companion?.setExpression?.('happy');
+      this._say('sessionStart');
+      // Speak the first inhale prompt half a second after the
+      // "Beginning" line so they don't overlap.
+      setTimeout(() => {
+        if (this._sessionRunning && this.isActive) this._say('inhale');
+      }, 1100);
+    } else {
+      this.companion?.setExpression?.('idle');
+      this._say('sessionPause');
+    }
+    this._renderPhaseLabel();
+  }
+
+  _updateBreathing(delta) {
+    const p = this._currentPattern;
+    const dur = p.durations[this._phaseIdx] || 1;
+
+    // Advance phase clock only when running.
+    if (this._sessionRunning) {
+      this._phaseElapsed += delta;
+      if (this._phaseElapsed >= dur) {
+        this._phaseElapsed = 0;
+        this._phaseIdx = (this._phaseIdx + 1) % 4;
+        if (this._phaseIdx === 0) {
+          this._cycleCount += 1;
+          // Quiet milestone at the 5th completed cycle, then again
+          // every 5 — but only one per session block to avoid spam.
+          if (this._cycleCount === 5) {
+            setTimeout(() => {
+              if (this._sessionRunning && this.isActive) {
+                this._say('cycleMilestone');
+              }
+            }, 400);
+          }
+        }
+        // Per-phase soft cue, only every other cycle so it doesn't
+        // crowd the bubble. Cycle 0/2/4… speak; 1/3/5… stay silent.
+        if (this._cycleCount % 2 === 0) {
+          const key = ['inhale', 'holdIn', 'exhale', 'holdOut'][this._phaseIdx];
+          this._say(key);
+        }
+        this._renderPhaseLabel();
+      }
+    }
+
+    // Compute a 0..1 "fullness" used to drive scale and emission. We
+    // ALWAYS produce a value: when a session is running, fullness is
+    // phase-driven (eased); when paused, we synthesise a slow ambient
+    // sine pulse (~6-second period) so the orb is visibly breathing on
+    // entry — the user shouldn't have to find the START button before
+    // they can recognise the centerpiece.
+    const ease = (x) => 0.5 - 0.5 * Math.cos(Math.PI * x);
+    let fullness;
+    if (this._sessionRunning) {
+      const t = this._phaseElapsed / dur;     // 0..1 within current phase
+      switch (this._phaseIdx) {
+        case 0: fullness = ease(t); break;          // inhale 0 → 1
+        case 1: fullness = 1; break;                 // hold-in
+        case 2: fullness = 1 - ease(t); break;       // exhale 1 → 0
+        default: fullness = 0; break;                // hold-out
+      }
+    } else {
+      // Ambient gentle breath — full sine wave, range 0.15 .. 0.95 so
+      // the orb never collapses to nothing and never clips at full.
+      const tNow = performance.now() * 0.001;
+      const amb = 0.5 + 0.5 * Math.sin(tNow * (2 * Math.PI) / 6);   // 6s period
+      fullness = 0.15 + amb * 0.80;
+    }
+
+    // Drive visuals.
+    if (this._orbCore) {
+      const s = 0.85 + 0.55 * fullness;
+      this._orbCore.scale.setScalar(s);
+      if (this._orbCoreMat) {
+        this._orbCoreMat.emissiveIntensity = 0.55 + 1.30 * fullness;
+      }
+      this._orbHalo?.scale.setScalar(s * 1.2);
+      if (this._orbHaloMat) this._orbHaloMat.opacity = 0.22 + 0.40 * fullness;
+    }
+    if (this._floorRing) {
+      const r = 0.9 + 1.9 * fullness;
+      this._floorRing.scale.setScalar(r);
+      if (this._floorRingMat) {
+        this._floorRingMat.opacity = 0.30 + 0.55 * fullness;
+      }
+    }
+    // Pulse the cohabiting point light too so the wood floor + sage
+    // walls visibly brighten on inhale, dim on exhale. This is the
+    // strongest "the room is breathing with you" cue in VR.
+    if (this._orbLight) {
+      this._orbLight.intensity = 0.55 + 1.10 * fullness;
+    }
+    // Cache fullness for particles to pulse with.
+    this._fullness = fullness;
+  }
+
+  // ── Mood logging ───────────────────────────────────────────
+  _logMood(id) {
+    const entry = this._moodLog[id];
+    if (!entry) return;
+    entry.count += 1;
+    this._moodTimeline.push(id);
+    if (this._moodTimeline.length > 60) this._moodTimeline.shift();
+    this._moodMirrorDirty = true;
+    this.companion?.setExpression?.('happy');
+    this._say('moodAck', id);
+  }
+
+  // ── Serenity shell (sage walls + light wood floor + ceiling) ─
+  _buildSerenityShell(width, depth, height) {
+    this.roomSize = { width, depth, height };
+
+    // Floor — pale honey wood.
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0xc7a878, roughness: 0.82, metalness: 0.04,
+    });
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    this.group.add(floor);
+
+    // Inner tatami circle for the meditation centre.
+    const tatamiMat = new THREE.MeshStandardMaterial({
+      color: 0xd9c187, roughness: 0.92, metalness: 0.0,
+    });
+    const tatami = new THREE.Mesh(new THREE.CircleGeometry(3.2, 48), tatamiMat);
+    tatami.rotation.x = -Math.PI / 2;
+    tatami.position.set(0, 0.005, -1.8);
+    this.group.add(tatami);
+
+    // Soft sage walls.
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0xd6e2d2, roughness: 0.94, side: THREE.DoubleSide,
+    });
+    const back = new THREE.Mesh(new THREE.PlaneGeometry(width, height), wallMat);
+    back.position.set(0, height / 2, -depth / 2);
+    this.group.add(back);
+    const front = new THREE.Mesh(new THREE.PlaneGeometry(width, height), wallMat.clone());
+    front.rotation.y = Math.PI;
+    front.position.set(0, height / 2, depth / 2);
+    this.group.add(front);
+    const left = new THREE.Mesh(new THREE.PlaneGeometry(depth, height), wallMat.clone());
+    left.rotation.y = Math.PI / 2;
+    left.position.set(-width / 2, height / 2, 0);
+    this.group.add(left);
+    const right = new THREE.Mesh(new THREE.PlaneGeometry(depth, height), wallMat.clone());
+    right.rotation.y = -Math.PI / 2;
+    right.position.set(width / 2, height / 2, 0);
+    this.group.add(right);
+
+    // Ceiling — pale ivory.
+    const ceilMat = new THREE.MeshStandardMaterial({
+      color: 0xf3ecdf, roughness: 0.95,
+    });
+    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), ceilMat);
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.y = height;
+    this.group.add(ceiling);
+
+    // Subtle bamboo skirting line at floor level (decorative ring).
+    const ringMat = new THREE.MeshStandardMaterial({
+      color: 0x8c6c40, roughness: 0.6,
+    });
+    const ringGeom = new THREE.TorusGeometry(Math.min(width, depth) / 2 - 0.08, 0.04, 8, 96);
+    const skirting = new THREE.Mesh(ringGeom, ringMat);
+    skirting.rotation.x = Math.PI / 2;
+    skirting.position.y = 0.04;
+    this.group.add(skirting);
+  }
+
+  // ── Breathing orb (centerpiece) ─────────────────────────────
+  _buildBreathingOrb() {
+    // Floor guidance ring directly under the orb — fades in/out as the
+    // user inhales / exhales so the breathing is also legible from the
+    // floor up (helpful in VR where you're often looking down). Wider
+    // and brighter so it reads from the player's spawn point.
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xb6e8d0, transparent: true, opacity: 0.6,
+      side: THREE.DoubleSide, depthWrite: false,
+    });
+    const ringGeom = new THREE.RingGeometry(1.05, 1.20, 96);
+    const ring = new THREE.Mesh(ringGeom, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(0, 0.015, -2.0);
+    this.group.add(ring);
+    this._floorRing = ring;
+    this._floorRingMat = ringMat;
+
+    // Soft halo (large, translucent, additive-feeling). Bumped from
+    // 0.85m to 1.05m radius so it still reads as an aura even when
+    // the orb is at minimum exhale scale.
+    const haloMat = new THREE.MeshBasicMaterial({
+      color: 0xc6f0dc, transparent: true, opacity: 0.32,
+      depthWrite: false, side: THREE.DoubleSide,
+    });
+    const halo = new THREE.Mesh(new THREE.SphereGeometry(1.05, 32, 24), haloMat);
+    halo.position.set(0, 1.6, -2.0);
+    this.group.add(halo);
+    this._orbHalo = halo;
+    this._orbHaloMat = haloMat;
+
+    // Glowing core sphere — emissive so it lights the room slightly.
+    // 0.6m → 0.75m so it claims the centre at any spawn distance.
+    const coreMat = new THREE.MeshStandardMaterial({
+      color: 0xa8d8c0,
+      emissive: 0xb8e8d0,
+      emissiveIntensity: 0.7,
+      roughness: 0.35, metalness: 0.05,
+      transparent: true, opacity: 0.95,
+    });
+    const core = new THREE.Mesh(new THREE.SphereGeometry(0.75, 48, 32), coreMat);
+    core.position.set(0, 1.6, -2.0);
+    this.group.add(core);
+    this._orbCore = core;
+    this._orbCoreMat = coreMat;
+
+    // Brighter cohabiting point light so the breathing pulse visibly
+    // washes the wood floor and sage walls each cycle.
+    const orbLight = new THREE.PointLight(0xc8f0d8, 1.1, 9.0, 2.0);
+    orbLight.position.set(0, 1.6, -2.0);
+    this.group.add(orbLight);
+    this._orbLight = orbLight;
+  }
+
+  // ── Phase label (canvas plane floating beside the orb) ────
+  _buildPhaseLabel() {
+    const W = 768, H = 384;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    this._phaseCanvas = cv;
+    this._phaseCtx    = cv.getContext('2d');
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    this._phaseTex = tex;
+
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    });
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.2), mat);
+    // Sits behind the orb so the orb reads as the focal point and the
+    // text is unmistakable above it.
+    plane.position.set(0, 3.1, -2.6);
+    this.group.add(plane);
+    this._phaseLabel = plane;
+  }
+
+  _renderPhaseLabel() {
+    if (!this._phaseCtx) return;
+    const ctx = this._phaseCtx;
+    const W = this._phaseCanvas.width;
+    const H = this._phaseCanvas.height;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Soft cream pill background with a sage trim.
+    ctx.fillStyle = 'rgba(255, 250, 240, 0.92)';
+    this._roundRect(ctx, 12, 12, W - 24, H - 24, 56); ctx.fill();
+    ctx.strokeStyle = '#7DC9A8';
+    ctx.lineWidth = 4;
+    this._roundRect(ctx, 12, 12, W - 24, H - 24, 56); ctx.stroke();
+
+    // Title (pattern + cycle counter).
+    ctx.fillStyle = '#3a4a40';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '500 36px "Inter","PingFang SC",sans-serif';
+    const p = this._currentPattern;
+    ctx.fillText(`${p.en} · ${p.zh}`, W / 2, 64);
+
+    // Phase headline.
+    const phases = [
+      { en: 'Inhale',  zh: '吸气' },
+      { en: 'Hold',    zh: '屏息' },
+      { en: 'Exhale',  zh: '呼气' },
+      { en: 'Rest',    zh: '放松' },
+    ];
+    const ph = phases[this._phaseIdx];
+    ctx.fillStyle = this._sessionRunning ? '#2c8c5c' : '#9aa39e';
+    ctx.font = '700 110px "Georgia","Times New Roman",serif';
+    ctx.fillText(ph.en, W / 2, H * 0.52);
+    ctx.fillStyle = '#5a6a60';
+    ctx.font = '500 56px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText(ph.zh, W / 2, H * 0.78);
+
+    // Footer (cycle counter or "Press START").
+    ctx.fillStyle = '#7a8a80';
+    ctx.font = '500 26px "Inter","PingFang SC",sans-serif';
+    if (this._sessionRunning) {
+      ctx.fillText(`Cycle ${this._cycleCount + 1} · 第 ${this._cycleCount + 1} 回合`, W / 2, H - 36);
+    } else {
+      ctx.fillText('Press START · 按 START 开始', W / 2, H - 36);
+    }
+
+    this._phaseTex.needsUpdate = true;
+  }
+
+  // ── Session controls (START / PAUSE / NATURAL / BOX / 4-7-8) ─
+  _buildSessionControls() {
+    const padW = 0.9, padH = 0.42, padD = 0.10;
+    const gap  = 0.12;
+    const barZ = 4.2;     // a couple metres in front of the orb
+    const barY = 1.45;
+    const buttons = [
+      { primary: 'START',  secondary: '开始',     action: () => this._toggleSession(true)  },
+      { primary: 'PAUSE',  secondary: '暂停',     action: () => this._toggleSession(false) },
+      { primary: 'NATURAL', secondary: '自然 4-4-6-2', patternId: 'natural',
+        action: () => this._setPattern('natural') },
+      { primary: 'BOX',    secondary: '盒式 4-4-4-4', patternId: 'box',
+        action: () => this._setPattern('box') },
+      { primary: '4-7-8',  secondary: '4-7-8 法',     patternId: '478',
+        action: () => this._setPattern('478') },
+    ];
+    const total = buttons.length * padW + (buttons.length - 1) * gap;
+    let x = -total / 2 + padW / 2;
+
+    const baseMat = new THREE.MeshStandardMaterial({
+      color: 0x2a3a32, roughness: 0.55, metalness: 0.25,
+    });
+    for (const def of buttons) {
+      const isActive = (def.patternId === this._currentPattern.id);
+      const tex = this._makeHealingButtonTexture(def.primary, def.secondary, isActive);
+      // Use a single-material box for the body and a separate front
+      // plane for the face so xr.js#_updateHover (which only knows
+      // how to bump `m.material.emissiveIntensity`) lands its hover
+      // highlight on the plane's MeshStandardMaterial. Multi-material
+      // boxes silently no-op the hover bump.
+      const pad = new THREE.Mesh(
+        new THREE.BoxGeometry(padW, padH, padD), baseMat);
+      pad.position.set(x, barY, barZ);
+      const faceMat = new THREE.MeshStandardMaterial({
+        map: tex, emissive: 0xffffff, emissiveMap: tex,
+        emissiveIntensity: 0.65, roughness: 0.55, metalness: 0.1,
+      });
+      const face = new THREE.Mesh(
+        new THREE.PlaneGeometry(padW * 0.96, padH * 0.92), faceMat);
+      face.position.set(0, 0, padD / 2 + 0.001);   // sit on +Z face of box
+      pad.add(face);
+
+      const press = () => {
+        const z0 = pad.position.z;
+        pad.position.z = z0 - 0.04;
+        setTimeout(() => { pad.position.z = z0; }, 120);
+        def.action?.();
+      };
+      // Both the box and the face register identical click handlers so
+      // the VR ray hits whichever surface the cursor lands on first.
+      pad.userData.onClick = press;
+      face.userData.onClick = press;
+
+      // Allow the pattern row to repaint highlight when the active
+      // pattern changes. Dispose the old CanvasTexture so a long VR
+      // session doesn't leak GPU textures every time a pattern is
+      // swapped.
+      if (def.patternId) {
+        pad.userData.patternId = def.patternId;
+        pad.userData.setActive = (active) => {
+          const oldTex = faceMat.map;
+          const newTex = this._makeHealingButtonTexture(def.primary, def.secondary, active);
+          faceMat.map = newTex;
+          faceMat.emissiveMap = newTex;
+          faceMat.needsUpdate = true;
+          oldTex?.dispose?.();
+        };
+        this._patternBtns.push(pad);
+      }
+      this.group.add(pad);
+      this.interactables.push(pad);
+      this.interactables.push(face);
+      x += padW + gap;
+    }
+  }
+
+  _makeHealingButtonTexture(primary, secondary, active) {
+    const W = 256, H = 128;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    if (active) {
+      grad.addColorStop(0, '#3aa78a');
+      grad.addColorStop(1, '#1f6a55');
+    } else {
+      grad.addColorStop(0, '#2c4438');
+      grad.addColorStop(1, '#1a2a22');
+    }
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = active ? '#ffffff' : 'rgba(180, 220, 200, 0.6)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(6, 6, W - 12, H - 12);
+    ctx.fillStyle = '#f1faf3';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 36px "Inter","Helvetica Neue",sans-serif';
+    ctx.fillText(primary, W / 2, H / 2 - 12);
+    ctx.fillStyle = active ? 'rgba(255,255,255,0.9)' : 'rgba(190, 220, 205, 0.78)';
+    ctx.font = '500 22px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText(secondary, W / 2, H / 2 + 26);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Mood stones (5 round pads on the floor) ────────────────
+  _buildMoodStones() {
+    const ids   = ['calm', 'happy', 'tired', 'anxious', 'sad'];
+    const radius = 4.4;
+    // Arc them around the orb's left/front so the player can reach
+    // them after a session without losing sight of the orb.
+    const startAngle = -Math.PI * 0.22;
+    const endAngle   =  Math.PI * 1.22;
+    const span = endAngle - startAngle;
+
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const m  = this._moodLog[id];
+      const a  = startAngle + (i / (ids.length - 1)) * span;
+      // We only place stones in the front half-plane (z > -1) so the
+      // player can see + reach them. Project the arc into that band.
+      const x = Math.cos(a) * radius;
+      const z = Math.sin(a) * radius * 0.7 + 1.0;
+
+      // Stone body: short cylinder with rounded look from the bevel.
+      const stoneMat = new THREE.MeshStandardMaterial({
+        color: 0x6a7a72, roughness: 0.85, metalness: 0.05,
+      });
+      const stone = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.55, 0.62, 0.18, 32), stoneMat);
+      stone.position.set(x, 0.09, z);
+      this.group.add(stone);
+
+      // Top decal — circular CanvasTexture with emoji + label.
+      const tex = this._makeStoneTexture(m);
+      const decalMat = new THREE.MeshBasicMaterial({
+        map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      });
+      const decal = new THREE.Mesh(new THREE.CircleGeometry(0.52, 48), decalMat);
+      decal.rotation.x = -Math.PI / 2;
+      decal.position.set(x, 0.19, z);
+      this.group.add(decal);
+
+      // Capture each mesh's baseline Y once so the press animation
+      // doesn't drift on rapid repeated taps.
+      const stoneBaseY = stone.position.y;
+      const decalBaseY = decal.position.y;
+      const press = () => {
+        stone.position.y = stoneBaseY - 0.04;
+        decal.position.y = decalBaseY - 0.04;
+        setTimeout(() => {
+          stone.position.y = stoneBaseY;
+          decal.position.y = decalBaseY;
+        }, 130);
+        this._logMood(id);
+      };
+      // Both the cylinder and the top decal register the same click —
+      // so a slightly off VR ray that lands on either surface still
+      // registers the mood entry.
+      decal.userData.onClick = press;
+      stone.userData.onClick = press;
+      this.interactables.push(decal);
+      this.interactables.push(stone);
+    }
+  }
+
+  _makeStoneTexture(mood) {
+    const D = 256;
+    const cv = document.createElement('canvas');
+    cv.width = D; cv.height = D;
+    const ctx = cv.getContext('2d');
+
+    // Soft mood-tint disc.
+    const grad = ctx.createRadialGradient(D / 2, D / 2, 20, D / 2, D / 2, D / 2);
+    grad.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
+    grad.addColorStop(1, mood.color);
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(D / 2, D / 2, D / 2 - 4, 0, Math.PI * 2); ctx.fill();
+
+    // Trim ring.
+    ctx.strokeStyle = 'rgba(60, 70, 60, 0.55)';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(D / 2, D / 2, D / 2 - 6, 0, Math.PI * 2); ctx.stroke();
+
+    // Emoji
+    ctx.font = '88px "Segoe UI Emoji", Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(mood.emoji, D / 2, D * 0.43);
+
+    // Label
+    ctx.font = '700 28px "Inter","PingFang SC",sans-serif';
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fillText(`${mood.en} · ${mood.zh}`, D / 2, D * 0.78);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Mood mirror (wall plaque rendered from the journal) ───
+  _buildMoodMirror() {
+    const W = 1024, H = 640;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    this._mirrorCanvas = cv;
+    this._mirrorCtx    = cv.getContext('2d');
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    this._mirrorTex = tex;
+
+    // The previous version pinned the plaque to the back wall, ~13m
+    // from the player's spawn — that worked on desktop but read as
+    // an unreadable postage stamp in VR. Pull it forward into the
+    // room as a freestanding plaque on the left of the breathing
+    // orb (~5m from the player), framed in dark wood, and tilt it
+    // gently toward the spawn so the camera can read it on entry.
+    const plaqueX = -3.6, plaqueY = 1.55, plaqueZ = -0.6;
+    const yawTowardSpawn = Math.PI * 0.18;     // face the player at +Z
+
+    const frameMat = new THREE.MeshStandardMaterial({
+      color: 0x6a4a30, roughness: 0.5, metalness: 0.1,
+    });
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.7, 0.10), frameMat);
+    frame.position.set(plaqueX, plaqueY, plaqueZ);
+    frame.rotation.y = yawTowardSpawn;
+    this.group.add(frame);
+
+    // Plaque face — emissive so the parchment reads even in low light.
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex, emissive: 0xffffff, emissiveMap: tex,
+      emissiveIntensity: 0.30, roughness: 0.45, metalness: 0.08,
+    });
+    const plaque = new THREE.Mesh(new THREE.PlaneGeometry(2.45, 1.55), mat);
+    plaque.position.set(plaqueX, plaqueY, plaqueZ + 0.06);
+    plaque.rotation.y = yawTowardSpawn;
+    // Apply the frame's offset to the plaque too: the plane needs to
+    // sit on the +Z face of the frame in its rotated frame, so push it
+    // forward along the rotated-+Z direction.
+    const off = new THREE.Vector3(0, 0, 0.06).applyEuler(plaque.rotation);
+    plaque.position.set(plaqueX + off.x, plaqueY, plaqueZ + off.z);
+    this.group.add(plaque);
+
+    // A small wooden stand beneath the plaque so it doesn't look like
+    // it's hovering in space.
+    const standMat = new THREE.MeshStandardMaterial({
+      color: 0x6a4a30, roughness: 0.6, metalness: 0.05,
+    });
+    const standBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.20, 0.32, 0.10, 24), standMat);
+    standBase.position.set(plaqueX, 0.05, plaqueZ);
+    this.group.add(standBase);
+    const standPole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.06, plaqueY - 0.85, 16), standMat);
+    standPole.position.set(plaqueX, (plaqueY - 0.85) / 2 + 0.10, plaqueZ);
+    this.group.add(standPole);
+  }
+
+  _renderMoodMirror() {
+    if (!this._mirrorCtx) return;
+    const ctx = this._mirrorCtx;
+    const W = this._mirrorCanvas.width;
+    const H = this._mirrorCanvas.height;
+
+    // Soft cream parchment.
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#fbf3df');
+    bg.addColorStop(1, '#ecdfc0');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    // Sage trim.
+    ctx.strokeStyle = '#7DC9A8';
+    ctx.lineWidth = 6;
+    this._roundRect(ctx, 14, 14, W - 28, H - 28, 32); ctx.stroke();
+
+    // Title row.
+    ctx.fillStyle = '#3a4a40';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = '700 56px "Georgia","Times New Roman",serif';
+    ctx.fillText('Mood Journal', 60, 50);
+    ctx.fillStyle = '#5a6a60';
+    ctx.font = '500 36px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText('心情记录', 60, 116);
+
+    // Total count chip on the top right.
+    const total = this._moodTimeline.length;
+    ctx.font = '500 28px "Inter",sans-serif';
+    ctx.fillStyle = 'rgba(125, 201, 168, 0.18)';
+    this._roundRect(ctx, W - 240, 60, 180, 50, 25); ctx.fill();
+    ctx.fillStyle = '#2c8c5c';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${total} entries`, W - 150, 86);
+
+    // Tally bars.
+    const ids = ['calm', 'happy', 'tired', 'anxious', 'sad'];
+    const max = Math.max(1, ...ids.map((id) => this._moodLog[id].count));
+    let y = 200;
+    const barX = 220, barW = W - barX - 80, rowH = 56;
+    for (const id of ids) {
+      const m = this._moodLog[id];
+      // Emoji + label
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = '36px "Segoe UI Emoji", Arial';
+      ctx.fillStyle = '#3a4a40';
+      ctx.fillText(m.emoji, 60, y + rowH / 2);
+      ctx.font = '600 26px "Inter","PingFang SC",sans-serif';
+      ctx.fillText(`${m.en} · ${m.zh}`, 110, y + rowH / 2);
+      // Bar background
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
+      this._roundRect(ctx, barX, y + 14, barW, 28, 14); ctx.fill();
+      // Bar fill
+      const filled = (m.count / max) * barW;
+      if (filled > 0) {
+        ctx.fillStyle = m.color;
+        this._roundRect(ctx, barX, y + 14, Math.max(filled, 28), 28, 14); ctx.fill();
+      }
+      // Count
+      ctx.fillStyle = '#3a4a40';
+      ctx.textAlign = 'right';
+      ctx.font = '700 24px "Inter",sans-serif';
+      ctx.fillText(String(m.count), W - 80, y + rowH / 2);
+      y += rowH + 8;
+    }
+
+    // Timeline strip (bottom): last entries as colored dots.
+    const stripY = H - 70;
+    ctx.fillStyle = '#3a4a40';
+    ctx.font = '500 22px "Inter","PingFang SC",sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Recent · 最近', 60, stripY);
+    const dotsX0 = 220;
+    const dotsW  = W - dotsX0 - 80;
+    const recent = this._moodTimeline.slice(-30);
+    if (recent.length > 0) {
+      const step = Math.min(20, dotsW / Math.max(1, recent.length));
+      for (let i = 0; i < recent.length; i++) {
+        const m = this._moodLog[recent[i]];
+        ctx.fillStyle = m.color;
+        ctx.beginPath();
+        ctx.arc(dotsX0 + i * step + 8, stripY, 8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      ctx.fillStyle = '#9aa39e';
+      ctx.font = '500 22px "Inter","PingFang SC",sans-serif';
+      ctx.fillText('No entries yet · 还没有记录哦', dotsX0, stripY);
+    }
+
+    this._mirrorTex.needsUpdate = true;
+  }
+
+  // ── Particle ambience (drifting petals + bokeh fireflies) ─
+  _buildParticleField() {
+    // Shared sprite — a soft round disc — used by both layers as a
+    // PointsMaterial map for that "bokeh" look.
+    const sprite = this._makeSoftDiscTexture();
+
+    // Petals — slow downward drift inside a 18×4×18 box.
+    const petalCount = 140;
+    const petalGeom = new THREE.BufferGeometry();
+    const pPos = new Float32Array(petalCount * 3);
+    const pCol = new Float32Array(petalCount * 3);
+    const pVel = new Float32Array(petalCount * 3);
+    const pPhase = new Float32Array(petalCount);
+    for (let i = 0; i < petalCount; i++) {
+      pPos[i * 3 + 0] = (Math.random() - 0.5) * 18;
+      pPos[i * 3 + 1] = Math.random() * 4 + 0.5;
+      pPos[i * 3 + 2] = (Math.random() - 0.5) * 18;
+      // Soft cherry / cream / pink palette.
+      const c = Math.random();
+      if (c < 0.4)      { pCol[i*3]=0.99; pCol[i*3+1]=0.78; pCol[i*3+2]=0.85; } // pink
+      else if (c < 0.75){ pCol[i*3]=1.00; pCol[i*3+1]=0.92; pCol[i*3+2]=0.78; } // cream
+      else              { pCol[i*3]=0.78; pCol[i*3+1]=0.92; pCol[i*3+2]=0.82; } // mint
+      pVel[i*3+0] = (Math.random() - 0.5) * 0.18;
+      pVel[i*3+1] = -0.18 - Math.random() * 0.12;
+      pVel[i*3+2] = (Math.random() - 0.5) * 0.18;
+      pPhase[i]   = Math.random() * Math.PI * 2;
+    }
+    petalGeom.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+    petalGeom.setAttribute('color',    new THREE.BufferAttribute(pCol, 3));
+    // PointsMaterial with sizeAttenuation in VR scales sprites by
+    // distance, so a 0.12m petal at 4m only paints ~3% of viewport
+    // height — invisible against the wall. 0.30m gives a ~7-8%
+    // footprint at 4m, which reads as a clear drifting petal.
+    const petalMat = new THREE.PointsMaterial({
+      size: 0.30, map: sprite, vertexColors: true,
+      transparent: true, opacity: 0.92,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
+    });
+    const petals = new THREE.Points(petalGeom, petalMat);
+    this.group.add(petals);
+    this._petalPoints = petals;
+    this._petalVel    = pVel;
+    this._petalPhase  = pPhase;
+
+    // Fireflies — gentle orbital bokeh, additive yellow-green.
+    const fireflyCount = 90;
+    const ffGeom = new THREE.BufferGeometry();
+    const fPos = new Float32Array(fireflyCount * 3);
+    const fCol = new Float32Array(fireflyCount * 3);
+    const fOrigin = new Float32Array(fireflyCount * 3);   // orbit centre
+    const fPhase  = new Float32Array(fireflyCount);
+    for (let i = 0; i < fireflyCount; i++) {
+      const cx = (Math.random() - 0.5) * 14;
+      const cy = 1.0 + Math.random() * 2.2;
+      const cz = (Math.random() - 0.5) * 14;
+      fOrigin[i*3] = cx; fOrigin[i*3+1] = cy; fOrigin[i*3+2] = cz;
+      fPos[i*3] = cx; fPos[i*3+1] = cy; fPos[i*3+2] = cz;
+      // Honey-yellow → mint.
+      const c = Math.random();
+      if (c < 0.5) { fCol[i*3]=1.00; fCol[i*3+1]=0.95; fCol[i*3+2]=0.65; }
+      else         { fCol[i*3]=0.78; fCol[i*3+1]=0.98; fCol[i*3+2]=0.86; }
+      fPhase[i] = Math.random() * Math.PI * 2;
+    }
+    ffGeom.setAttribute('position', new THREE.BufferAttribute(fPos, 3));
+    ffGeom.setAttribute('color',    new THREE.BufferAttribute(fCol, 3));
+    const ffMat = new THREE.PointsMaterial({
+      size: 0.40, map: sprite, vertexColors: true,
+      transparent: true, opacity: 0.95,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
+    });
+    const fireflies = new THREE.Points(ffGeom, ffMat);
+    this.group.add(fireflies);
+    this._fireflyPoints = fireflies;
+    this._fireflyOrigin = fOrigin;
+    this._fireflyPhase  = fPhase;
+    this._fireflyMat    = ffMat;
+  }
+
+  _updateParticles(delta) {
+    // Petals: drift downward with subtle horizontal sway, recycle to
+    // the top once they fall below the floor. Cheap O(n) update.
+    const petals = this._petalPoints;
+    if (petals) {
+      const pos = petals.geometry.attributes.position.array;
+      for (let i = 0; i < pos.length / 3; i++) {
+        const ix = i * 3;
+        // Sway from sin(phase) so the motion isn't a straight line.
+        this._petalPhase[i] += delta * 0.6;
+        const sway = Math.sin(this._petalPhase[i]) * 0.10;
+        pos[ix + 0] += (this._petalVel[ix + 0] + sway) * delta;
+        pos[ix + 1] += this._petalVel[ix + 1] * delta;
+        pos[ix + 2] += this._petalVel[ix + 2] * delta;
+        if (pos[ix + 1] < 0.05) {
+          pos[ix + 0] = (Math.random() - 0.5) * 18;
+          pos[ix + 1] = 4.5;
+          pos[ix + 2] = (Math.random() - 0.5) * 18;
+        }
+      }
+      petals.geometry.attributes.position.needsUpdate = true;
+    }
+
+    // Fireflies: orbit a fixed origin in a small circle. Pulse opacity
+    // with the breathing rhythm when a session is running so the room
+    // visibly "breathes" along with the orb.
+    const ff = this._fireflyPoints;
+    if (ff) {
+      const pos = ff.geometry.attributes.position.array;
+      for (let i = 0; i < pos.length / 3; i++) {
+        const ix = i * 3;
+        this._fireflyPhase[i] += delta * 0.5;
+        const t = this._fireflyPhase[i];
+        pos[ix + 0] = this._fireflyOrigin[ix + 0] + Math.cos(t) * 0.45;
+        pos[ix + 1] = this._fireflyOrigin[ix + 1] + Math.sin(t * 1.3) * 0.18;
+        pos[ix + 2] = this._fireflyOrigin[ix + 2] + Math.sin(t) * 0.45;
+      }
+      ff.geometry.attributes.position.needsUpdate = true;
+
+      if (this._fireflyMat) {
+        // Always pulse with the breathing rhythm — `_fullness` is now
+        // synthesised from a slow ambient sine when no session is
+        // running, so the room breathes whether or not the user has
+        // pressed START. Range 0.50..0.95 keeps the bokeh visible even
+        // at exhale.
+        this._fireflyMat.opacity = 0.50 + 0.45 * (this._fullness ?? 0);
+      }
+    }
+  }
+
+  _makeSoftDiscTexture() {
+    const D = 64;
+    const cv = document.createElement('canvas');
+    cv.width = D; cv.height = D;
+    const ctx = cv.getContext('2d');
+    const g = ctx.createRadialGradient(D / 2, D / 2, 1, D / 2, D / 2, D / 2);
+    g.addColorStop(0,   'rgba(255,255,255,1)');
+    g.addColorStop(0.4, 'rgba(255,255,255,0.6)');
+    g.addColorStop(1,   'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, D, D);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  // Tiny rounded-rectangle helper (canvas only).
+  _roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
   }
 }
 
@@ -2496,7 +4690,7 @@ class GamesVRRoom extends VRRoom {
   _buildGomokuAssets() {
     const g = this._gomoku;
 
-    // Biconvex stone profile via LatheGeometry — proportional to a real
+    // Biconvex stone profile via LatheGeometry �� proportional to a real
     // Yunzi stone (R ≈ 0.42×cell, T ≈ 0.36×R). The silhouette is one
     // sphere arc on top, mirrored on the bottom, meeting at the equator.
     //
@@ -2556,7 +4750,7 @@ class GamesVRRoom extends VRRoom {
   // ──────────────────────────────────────���─────────────────────
   //  Make the giant floor board itself a click target. The handler
   //  is always installed but only does work while a game is active.
-  // ───────────────────────���────────────────────────────────────
+  // ───────────────��───────���────────────────────────────────────
   _enableBoardClick() {
     const top = this._boardTopMesh;
     if (!top) return;
@@ -2695,7 +4889,7 @@ class GamesVRRoom extends VRRoom {
 
   // ────────────────────────────────────────────────────────────
   //  Win detection — scan from the just-placed stone in 4 axes.
-  // ────────────────────────────────────────────────────────────
+  // ──────────────────────────��─────────────────────────────────
   _checkWin(row, col, who) {
     const g = this._gomoku;
     const dirs = [[0, 1], [1, 0], [1, 1], [1, -1]];
@@ -3530,7 +5724,7 @@ class GamesVRRoom extends VRRoom {
   //  first; AI plays black at z = -. All piece geometries and
   //  materials are created once in `_buildChessAssets()` and cloned
   //  per-piece so first move is responsive (no run-time alloc).
-  // ════════════════════════════════════════════════════════════
+  // ════════════════════════════════════════════════════���═══════
 
   // ── Asset prep: lathe-based bodies + composite tops ────────
   _buildChessAssets() {
@@ -3889,7 +6083,7 @@ class GamesVRRoom extends VRRoom {
 
   // ────────────────────────────────────────────────────────────
   //  Game lifecycle
-  // ────────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────��─────────────────
   _startChessGame() {
     const ch = this._chess;
     this._setBoardMode('chess');
@@ -4111,7 +6305,7 @@ class GamesVRRoom extends VRRoom {
     ch.board[move.to.r][move.to.c] = { type: finalType, color: piece.color };
   }
 
-  // ────────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────��─────────────
   //  Animations: piece move (player or AI), with optional AI cursor.
   //  All animations advance in `_tickChessAnimations(delta)`.
   // ────────────────────────────────────────────────────────────
@@ -4367,7 +6561,7 @@ class GamesVRRoom extends VRRoom {
     return s;
   }
 
-  // ────────────────────────────────────────────────────────────
+  // ���───────────────────────────────────────────────────────────
   //  Move generation + check detection
   // ────────────────────────────────────────────────────────────
   _chessLegalMoves(board, color) {
@@ -4783,12 +6977,21 @@ export class VRRoomManager {
   constructor(scene, playerGroup, options = {}) {
     this.scene = scene;
     this.playerGroup = playerGroup;
+    this.renderer = options.renderer || null;     // for renderer.xr.getCamera()
     this.onRoomEnter = options.onRoomEnter || (() => {});
     this.onRoomExit = options.onRoomExit || (() => {});
-    
+
     this.rooms = new Map();
     this.activeRoom = null;
     this.savedPlayerPos = new THREE.Vector3();
+    this.savedPlayerRotY = 0;
+
+    // Reusable scratch vectors so enterRoom() doesn't allocate every call.
+    this._tmpHeadPos    = new THREE.Vector3();
+    this._tmpHeadFwd    = new THREE.Vector3();
+    this._tmpDesired    = new THREE.Vector3();
+    this._tmpQuat       = new THREE.Quaternion();
+    this._tmpYAxis      = new THREE.Vector3(0, 1, 0);
     
     // Room configurations for lazy loading
     this.roomConfigs = {
@@ -4831,14 +7034,29 @@ export class VRRoomManager {
       this.activeRoom.exit();
     }
 
+    // Save the rig's world pose so exitRoom() can put the player back
+    // in the lobby right where they came from.
     this.savedPlayerPos.copy(this.playerGroup.position);
+    this.savedPlayerRotY = this.playerGroup.rotation.y;
 
     const spawnPoint = room.getSpawnPoint();
-    this.playerGroup.position.copy(spawnPoint);
+    const lookAt     = room.getLookAtPoint?.() ||
+                       spawnPoint.clone().add(new THREE.Vector3(0, 1.5, -3));
+
+    // Rotate + translate the rig so the headset's world position lands
+    // on `spawnPoint` and its forward axis points at `lookAt`. Without
+    // this the VR view differs from the desktop view because the HMD
+    // sits at an arbitrary real-world offset from the rig origin and
+    // faces wherever the player happens to be looking.
+    if (!this._recenterRigToFace(spawnPoint, lookAt)) {
+      // Fallback when no XR camera is available yet (e.g. desktop mode):
+      // just place the rig itself on the spawn point.
+      this.playerGroup.position.copy(spawnPoint);
+    }
 
     room.enter();
     this.activeRoom = room;
-    
+
     this.onRoomEnter(zoneId, room);
     return room;
   }
@@ -4851,6 +7069,76 @@ export class VRRoomManager {
     this.activeRoom = null;
 
     this.playerGroup.position.copy(this.savedPlayerPos);
+    this.playerGroup.rotation.y = this.savedPlayerRotY;
+  }
+
+  /**
+   * Rotate + translate the rig so that the headset's world pose
+   * (camera world position + camera world forward) ends up at
+   * `(spawn, lookAt)` regardless of the player's physical pose in
+   * their VR play space.
+   *
+   * Returns true on success, false when no XR camera is available
+   * (typical for the desktop boot path before VR has been entered).
+   *
+   * Math:
+   *   1. Read head world pos H and head forward F (XZ-projected).
+   *   2. Compute desired forward D = normalize((lookAt - spawn).xz).
+   *   3. Solve for yaw θ such that R(θ)·F = D where R is rotation
+   *      around +Y in three.js' right-handed convention:
+   *        F' = ( cosθ·Fx + sinθ·Fz, _ , -sinθ·Fx + cosθ·Fz )
+   *      → sinθ = Dx·Fz - Dz·Fx
+   *        cosθ = Dx·Fx + Dz·Fz
+   *        θ    = atan2(sinθ, cosθ)
+   *   4. Rotate the rig by θ around the world-space head point H
+   *      (translate-rotate-translate), then offset the rig by
+   *      (spawn - H).xz so the head ends up exactly at spawn.
+   *      Y is left at 0 because the headset Y is HMD-driven.
+   */
+  _recenterRigToFace(spawn, lookAt) {
+    // Desktop mode (or VR not yet started): there's no real headset
+    // pose to recenter against — let the caller fall back to dropping
+    // the rig at the spawn point.
+    if (!this.renderer?.xr?.isPresenting) return false;
+    const xrCam = this.renderer.xr.getCamera?.();
+    if (!xrCam) return false;
+
+    // 1. Head world pose.
+    xrCam.getWorldPosition(this._tmpHeadPos);
+    xrCam.getWorldQuaternion(this._tmpQuat);
+    this._tmpHeadFwd.set(0, 0, -1).applyQuaternion(this._tmpQuat);
+    this._tmpHeadFwd.y = 0;
+    if (this._tmpHeadFwd.lengthSq() < 1e-6) this._tmpHeadFwd.set(0, 0, -1);
+    this._tmpHeadFwd.normalize();
+
+    // 2. Desired forward (XZ).
+    this._tmpDesired.subVectors(lookAt, spawn);
+    this._tmpDesired.y = 0;
+    if (this._tmpDesired.lengthSq() < 1e-6) this._tmpDesired.set(0, 0, -1);
+    this._tmpDesired.normalize();
+
+    // 3. Yaw from headFwd → desired (around +Y, three.js convention).
+    const sin = this._tmpDesired.x * this._tmpHeadFwd.z -
+                this._tmpDesired.z * this._tmpHeadFwd.x;
+    const cos = this._tmpDesired.x * this._tmpHeadFwd.x +
+                this._tmpDesired.z * this._tmpHeadFwd.z;
+    const yaw = Math.atan2(sin, cos);
+
+    // 4. Rotate the rig around the head point, then translate so the
+    //    head world pos becomes the spawn point.
+    const rig = this.playerGroup;
+    const Hx = this._tmpHeadPos.x;
+    const Hz = this._tmpHeadPos.z;
+    rig.position.x -= Hx;
+    rig.position.z -= Hz;
+    rig.position.applyAxisAngle(this._tmpYAxis, yaw);
+    rig.position.x += Hx;
+    rig.position.z += Hz;
+    rig.rotation.y += yaw;
+    rig.position.x += (spawn.x - Hx);
+    rig.position.z += (spawn.z - Hz);
+    rig.position.y = 0;
+    return true;
   }
 
   update(delta, camWorld) {

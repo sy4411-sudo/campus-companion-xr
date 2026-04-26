@@ -3,9 +3,12 @@
 //  Orchestrates: Scene → XR → Avatar → Agent → Chat
 // ============================================================
 
-import { CampusScene } from './scene.js';
-import { XRManager }   from './xr.js';
-import { VRRoomManager } from './vr-rooms.js';
+// Version-tagged imports so Quest Browser's HTTP cache can't serve old
+// scene/XR/VR-room code from a previous deploy. Bump in lock-step with
+// the ?v= tags in index.html when you need to flush the headset cache.
+import { CampusScene }    from './scene.js?v=20260426-2';
+import { XRManager }      from './xr.js?v=20260426-2';
+import { VRRoomManager }  from './vr-rooms.js?v=20260426-2';
 
 // ── DOM refs ──────────────────────────────────────────────────
 const loadingScreen  = document.getElementById('loading-screen');
@@ -108,6 +111,10 @@ async function boot() {
 
   // VR Room Manager - handles immersive room environments
   vrRoomMgr = new VRRoomManager(scene.scene, scene.playerGroup, {
+    // Pass the renderer so the manager can read `renderer.xr.getCamera()`
+    // and recenter the rig (head world pos / yaw) on room entry — this
+    // is what keeps the VR view aligned with the desktop view.
+    renderer: scene.renderer,
     onRoomEnter: (zoneId, room) => {
       isInVRRoom = true;
       const exitPortal = room.getExitPortal?.();

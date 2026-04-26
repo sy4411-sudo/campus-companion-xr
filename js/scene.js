@@ -8,8 +8,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { mountTripoModel } from './tripo-loader.js';
-import { AICompanion } from './ai-companion.js';
+import { mountTripoModel } from './tripo-loader.js?v=20260426-2';
+import { AICompanion }     from './ai-companion.js?v=20260426-2';
 
 export class CampusScene {
   constructor(canvas) {
@@ -1364,17 +1364,18 @@ export class CampusScene {
           'The Chat Corner — sit down, talk it out.\n那里有个温柔的小球陪着你。',
         ],
         study: [
-          '学习区还在装修中喔～\nThe Study Room is still being prepared. 之后会上线。',
-          '抱歉，学习区暂时不开放。\nStudy Room — coming soon!',
+          '学习区开放啦~\nThe Study Room is open. 绘绘会陪你出题、讲解。',
+          'Drop by the Study Room — \n那里有白板、课件卡和一只爱出题的小老师。',
         ],
         leisure: [
           '休闲区是一个家庭影院。\nThe Leisure Lounge — a real home cinema.',
           '想看电影吗？休闲区有大屏幕和零食。\n灵灵会陪你一起看。',
         ],
-        healing: [
-          '疗愈区还没完全建好，\nThe Healing Garden is still in development — soon!',
-          '抱歉，疗愈区暂时不开放，\nstay tuned for the garden.',
-        ],
+  healing: [
+  '想找个地方静一静吗?\n莲莲在疗愈花园陪你做几节深呼吸.',
+  '走累了就去疗愈区, 那里能记录心情、还会有粒子陪你呼吸.\n' +
+  'The Healing Garden — guided breathing + mood journal.',
+  ],
         games: [
           '轻游戏区可以玩五子棋和国际象棋，\n童童会陪你下，并且当裁判。',
           'Game Zone — Gomoku & full chess.\n童童会一边下棋一边碎碎念。',
