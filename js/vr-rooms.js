@@ -3793,35 +3793,53 @@ class HealingVRRoom extends VRRoom {
     for (const def of buttons) {
       const isActive = (def.patternId === this._currentPattern.id);
       const tex = this._makeHealingButtonTexture(def.primary, def.secondary, isActive);
+      // Use a single-material box for the body and a separate front
+      // plane for the face so xr.js#_updateHover (which only knows
+      // how to bump `m.material.emissiveIntensity`) lands its hover
+      // highlight on the plane's MeshStandardMaterial. Multi-material
+      // boxes silently no-op the hover bump.
+      const pad = new THREE.Mesh(
+        new THREE.BoxGeometry(padW, padH, padD), baseMat);
+      pad.position.set(x, barY, barZ);
       const faceMat = new THREE.MeshStandardMaterial({
         map: tex, emissive: 0xffffff, emissiveMap: tex,
         emissiveIntensity: 0.65, roughness: 0.55, metalness: 0.1,
       });
-      const pad = new THREE.Mesh(
-        new THREE.BoxGeometry(padW, padH, padD),
-        [baseMat, baseMat, baseMat, baseMat, faceMat, baseMat],
-      );
-      pad.position.set(x, barY, barZ);
-      pad.userData.onClick = () => {
+      const face = new THREE.Mesh(
+        new THREE.PlaneGeometry(padW * 0.96, padH * 0.92), faceMat);
+      face.position.set(0, 0, padD / 2 + 0.001);   // sit on +Z face of box
+      pad.add(face);
+
+      const press = () => {
         const z0 = pad.position.z;
         pad.position.z = z0 - 0.04;
         setTimeout(() => { pad.position.z = z0; }, 120);
         def.action?.();
       };
+      // Both the box and the face register identical click handlers so
+      // the VR ray hits whichever surface the cursor lands on first.
+      pad.userData.onClick = press;
+      face.userData.onClick = press;
+
       // Allow the pattern row to repaint highlight when the active
-      // pattern changes.
+      // pattern changes. Dispose the old CanvasTexture so a long VR
+      // session doesn't leak GPU textures every time a pattern is
+      // swapped.
       if (def.patternId) {
         pad.userData.patternId = def.patternId;
         pad.userData.setActive = (active) => {
+          const oldTex = faceMat.map;
           const newTex = this._makeHealingButtonTexture(def.primary, def.secondary, active);
           faceMat.map = newTex;
           faceMat.emissiveMap = newTex;
           faceMat.needsUpdate = true;
+          oldTex?.dispose?.();
         };
         this._patternBtns.push(pad);
       }
       this.group.add(pad);
       this.interactables.push(pad);
+      this.interactables.push(face);
       x += padW + gap;
     }
   }
@@ -3896,22 +3914,25 @@ class HealingVRRoom extends VRRoom {
       decal.position.set(x, 0.19, z);
       this.group.add(decal);
 
-      // Click target sits on top of the decal and forwards to _logMood.
-      decal.userData.onClick = () => {
-        const y0 = stone.position.y;
-        stone.position.y = y0 - 0.04;
-        decal.position.y -= 0.04;
+      // Capture each mesh's baseline Y once so the press animation
+      // doesn't drift on rapid repeated taps.
+      const stoneBaseY = stone.position.y;
+      const decalBaseY = decal.position.y;
+      const press = () => {
+        stone.position.y = stoneBaseY - 0.04;
+        decal.position.y = decalBaseY - 0.04;
         setTimeout(() => {
-          stone.position.y = y0;
-          decal.position.y = y0 + 0.10;
+          stone.position.y = stoneBaseY;
+          decal.position.y = decalBaseY;
         }, 130);
         this._logMood(id);
       };
+      // Both the cylinder and the top decal register the same click —
+      // so a slightly off VR ray that lands on either surface still
+      // registers the mood entry.
+      decal.userData.onClick = press;
+      stone.userData.onClick = press;
       this.interactables.push(decal);
-
-      // Make the stone itself clickable too — so a slightly off VR
-      // raycast still registers — by piggybacking on the same handler.
-      stone.userData.onClick = decal.userData.onClick;
       this.interactables.push(stone);
     }
   }
@@ -6001,7 +6022,7 @@ class GamesVRRoom extends VRRoom {
 
   // ────────────────────────────────────────────────────────────
   //  Game lifecycle
-  // ────────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────��─────────────────
   _startChessGame() {
     const ch = this._chess;
     this._setBoardMode('chess');
@@ -6223,7 +6244,7 @@ class GamesVRRoom extends VRRoom {
     ch.board[move.to.r][move.to.c] = { type: finalType, color: piece.color };
   }
 
-  // ────────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────��─────────────
   //  Animations: piece move (player or AI), with optional AI cursor.
   //  All animations advance in `_tickChessAnimations(delta)`.
   // ────────────────────────────────────────────────────────────
