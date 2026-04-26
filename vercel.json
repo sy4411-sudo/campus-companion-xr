@@ -14,17 +14,28 @@
       ]
     },
     {
-      "//": "Quest Browser (and Chrome heuristic caching) hangs on to old JS/CSS for hours after a deploy. Force a revalidation on every load so headset users see new code immediately after a push.",
-      "source": "/(.*\\.(js|css|html))",
+      "//": "JS/CSS: must-revalidate every load. Quest Browser + Chrome heuristic caching otherwise pin old JS for hours after a deploy. no-cache allows the browser to store the file but forces a 304 round-trip, so steady-state cost stays minimal.",
+      "source": "/(.*\\.(js|css))",
       "headers": [
-        { "key": "Cache-Control", "value": "no-cache, must-revalidate" }
+        { "key": "Cache-Control", "value": "no-cache, must-revalidate, max-age=0" }
       ]
     },
     {
-      "//": "The HTML entry-point itself must always be fresh — otherwise it keeps loading old <script src> versions even when JS revalidates.",
+      "//": "HTML entry-points: no-store. This is the SINGLE most important header — when a user clicks Publish Site, the new deployment must reach them on the very first request. no-store forbids the browser from keeping the HTML at all, so every load talks to the CDN and picks up the latest <script src> versions.",
       "source": "/",
       "headers": [
-        { "key": "Cache-Control", "value": "no-cache, must-revalidate" }
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" },
+        { "key": "Pragma", "value": "no-cache" },
+        { "key": "Expires", "value": "0" }
+      ]
+    },
+    {
+      "//": "Same no-store rule for any explicit *.html path so /index.html, /foo.html etc. all bypass the browser cache.",
+      "source": "/(.*\\.html)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" },
+        { "key": "Pragma", "value": "no-cache" },
+        { "key": "Expires", "value": "0" }
       ]
     }
   ]
