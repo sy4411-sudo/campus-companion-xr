@@ -3,9 +3,12 @@
 //  Orchestrates: Scene → XR → Avatar → Agent → Chat
 // ============================================================
 
-import { CampusScene } from './scene.js';
-import { XRManager }   from './xr.js';
-import { VRRoomManager } from './vr-rooms.js';
+// Version-tagged imports so Quest Browser's HTTP cache can't serve old
+// scene/XR/VR-room code from a previous deploy. Bump in lock-step with
+// the ?v= tags in index.html when you need to flush the headset cache.
+import { CampusScene }    from './scene.js?v=20260426-2';
+import { XRManager }      from './xr.js?v=20260426-2';
+import { VRRoomManager }  from './vr-rooms.js?v=20260426-2';
 
 // ── DOM refs ──────────────────────────────────────────────────
 const loadingScreen  = document.getElementById('loading-screen');

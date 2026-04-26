@@ -2,8 +2,8 @@
  * VR Rooms - With interactive features
  */
 import * as THREE from 'three';
-import { AICompanion } from './ai-companion.js';
-import { mountTripoModel } from './tripo-loader.js';
+import { AICompanion }     from './ai-companion.js?v=20260426-2';
+import { mountTripoModel } from './tripo-loader.js?v=20260426-2';
 
 // ============================================================
 //  Base VR Room Class

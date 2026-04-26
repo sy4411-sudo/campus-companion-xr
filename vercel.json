@@ -12,6 +12,20 @@
         { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
         { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" }
       ]
+    },
+    {
+      "//": "Quest Browser (and Chrome heuristic caching) hangs on to old JS/CSS for hours after a deploy. Force a revalidation on every load so headset users see new code immediately after a push.",
+      "source": "/(.*\\.(js|css|html))",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, must-revalidate" }
+      ]
+    },
+    {
+      "//": "The HTML entry-point itself must always be fresh — otherwise it keeps loading old <script src> versions even when JS revalidates.",
+      "source": "/",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, must-revalidate" }
+      ]
     }
   ]
 }

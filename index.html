@@ -12,7 +12,14 @@
     }
   }
   </script>
-  <link rel="stylesheet" href="css/style.css" />
+  <!--
+    Cache-bust token. Bump this any time you ship a change you want to be
+    sure reaches Quest Browser users on first load — Quest's HTTP cache
+    will happily serve stale JS for hours otherwise. The vercel.json
+    Cache-Control: no-cache headers handle the steady state; this
+    query string is the one-time kick to flush already-cached assets.
+  -->
+  <link rel="stylesheet" href="css/style.css?v=20260426-2" />
 </head>
 <body>
 
@@ -124,14 +131,18 @@
   </div>
 
   <!-- ══ Scripts ════════════════════════════════════════════ -->
-  <script src="js/config.js"></script>
-  <script src="js/tripo.js"></script>
-  <script src="js/agent.js"></script>
-  <script src="js/chat.js"></script>
-  <script src="js/voice.js"></script>
-  <script src="js/vr-panels.js"></script>
-  <script src="js/home-theater.js"></script>
-  <script type="module" src="js/main.js"></script>
+  <!-- ?v=20260426-2 cache-bust forces Quest Browser to re-download every
+       script once. After this load, the no-cache headers in vercel.json
+       keep further deploys arriving on the headset without a manual
+       refresh. Bump the version when you need another forced flush. -->
+  <script src="js/config.js?v=20260426-2"></script>
+  <script src="js/tripo.js?v=20260426-2"></script>
+  <script src="js/agent.js?v=20260426-2"></script>
+  <script src="js/chat.js?v=20260426-2"></script>
+  <script src="js/voice.js?v=20260426-2"></script>
+  <script src="js/vr-panels.js?v=20260426-2"></script>
+  <script src="js/home-theater.js?v=20260426-2"></script>
+  <script type="module" src="js/main.js?v=20260426-2"></script>
 
 </body>
 </html>
