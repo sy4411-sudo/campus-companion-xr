@@ -6977,12 +6977,21 @@ export class VRRoomManager {
   constructor(scene, playerGroup, options = {}) {
     this.scene = scene;
     this.playerGroup = playerGroup;
+    this.renderer = options.renderer || null;     // for renderer.xr.getCamera()
     this.onRoomEnter = options.onRoomEnter || (() => {});
     this.onRoomExit = options.onRoomExit || (() => {});
-    
+
     this.rooms = new Map();
     this.activeRoom = null;
     this.savedPlayerPos = new THREE.Vector3();
+    this.savedPlayerRotY = 0;
+
+    // Reusable scratch vectors so enterRoom() doesn't allocate every call.
+    this._tmpHeadPos    = new THREE.Vector3();
+    this._tmpHeadFwd    = new THREE.Vector3();
+    this._tmpDesired    = new THREE.Vector3();
+    this._tmpQuat       = new THREE.Quaternion();
+    this._tmpYAxis      = new THREE.Vector3(0, 1, 0);
     
     // Room configurations for lazy loading
     this.roomConfigs = {
@@ -7025,14 +7034,29 @@ export class VRRoomManager {
       this.activeRoom.exit();
     }
 
+    // Save the rig's world pose so exitRoom() can put the player back
+    // in the lobby right where they came from.
     this.savedPlayerPos.copy(this.playerGroup.position);
+    this.savedPlayerRotY = this.playerGroup.rotation.y;
 
     const spawnPoint = room.getSpawnPoint();
-    this.playerGroup.position.copy(spawnPoint);
+    const lookAt     = room.getLookAtPoint?.() ||
+                       spawnPoint.clone().add(new THREE.Vector3(0, 1.5, -3));
+
+    // Rotate + translate the rig so the headset's world position lands
+    // on `spawnPoint` and its forward axis points at `lookAt`. Without
+    // this the VR view differs from the desktop view because the HMD
+    // sits at an arbitrary real-world offset from the rig origin and
+    // faces wherever the player happens to be looking.
+    if (!this._recenterRigToFace(spawnPoint, lookAt)) {
+      // Fallback when no XR camera is available yet (e.g. desktop mode):
+      // just place the rig itself on the spawn point.
+      this.playerGroup.position.copy(spawnPoint);
+    }
 
     room.enter();
     this.activeRoom = room;
-    
+
     this.onRoomEnter(zoneId, room);
     return room;
   }
@@ -7045,6 +7069,76 @@ export class VRRoomManager {
     this.activeRoom = null;
 
     this.playerGroup.position.copy(this.savedPlayerPos);
+    this.playerGroup.rotation.y = this.savedPlayerRotY;
+  }
+
+  /**
+   * Rotate + translate the rig so that the headset's world pose
+   * (camera world position + camera world forward) ends up at
+   * `(spawn, lookAt)` regardless of the player's physical pose in
+   * their VR play space.
+   *
+   * Returns true on success, false when no XR camera is available
+   * (typical for the desktop boot path before VR has been entered).
+   *
+   * Math:
+   *   1. Read head world pos H and head forward F (XZ-projected).
+   *   2. Compute desired forward D = normalize((lookAt - spawn).xz).
+   *   3. Solve for yaw θ such that R(θ)·F = D where R is rotation
+   *      around +Y in three.js' right-handed convention:
+   *        F' = ( cosθ·Fx + sinθ·Fz, _ , -sinθ·Fx + cosθ·Fz )
+   *      → sinθ = Dx·Fz - Dz·Fx
+   *        cosθ = Dx·Fx + Dz·Fz
+   *        θ    = atan2(sinθ, cosθ)
+   *   4. Rotate the rig by θ around the world-space head point H
+   *      (translate-rotate-translate), then offset the rig by
+   *      (spawn - H).xz so the head ends up exactly at spawn.
+   *      Y is left at 0 because the headset Y is HMD-driven.
+   */
+  _recenterRigToFace(spawn, lookAt) {
+    // Desktop mode (or VR not yet started): there's no real headset
+    // pose to recenter against — let the caller fall back to dropping
+    // the rig at the spawn point.
+    if (!this.renderer?.xr?.isPresenting) return false;
+    const xrCam = this.renderer.xr.getCamera?.();
+    if (!xrCam) return false;
+
+    // 1. Head world pose.
+    xrCam.getWorldPosition(this._tmpHeadPos);
+    xrCam.getWorldQuaternion(this._tmpQuat);
+    this._tmpHeadFwd.set(0, 0, -1).applyQuaternion(this._tmpQuat);
+    this._tmpHeadFwd.y = 0;
+    if (this._tmpHeadFwd.lengthSq() < 1e-6) this._tmpHeadFwd.set(0, 0, -1);
+    this._tmpHeadFwd.normalize();
+
+    // 2. Desired forward (XZ).
+    this._tmpDesired.subVectors(lookAt, spawn);
+    this._tmpDesired.y = 0;
+    if (this._tmpDesired.lengthSq() < 1e-6) this._tmpDesired.set(0, 0, -1);
+    this._tmpDesired.normalize();
+
+    // 3. Yaw from headFwd → desired (around +Y, three.js convention).
+    const sin = this._tmpDesired.x * this._tmpHeadFwd.z -
+                this._tmpDesired.z * this._tmpHeadFwd.x;
+    const cos = this._tmpDesired.x * this._tmpHeadFwd.x +
+                this._tmpDesired.z * this._tmpHeadFwd.z;
+    const yaw = Math.atan2(sin, cos);
+
+    // 4. Rotate the rig around the head point, then translate so the
+    //    head world pos becomes the spawn point.
+    const rig = this.playerGroup;
+    const Hx = this._tmpHeadPos.x;
+    const Hz = this._tmpHeadPos.z;
+    rig.position.x -= Hx;
+    rig.position.z -= Hz;
+    rig.position.applyAxisAngle(this._tmpYAxis, yaw);
+    rig.position.x += Hx;
+    rig.position.z += Hz;
+    rig.rotation.y += yaw;
+    rig.position.x += (spawn.x - Hx);
+    rig.position.z += (spawn.z - Hz);
+    rig.position.y = 0;
+    return true;
   }
 
   update(delta, camWorld) {

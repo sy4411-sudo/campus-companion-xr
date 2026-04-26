@@ -108,6 +108,10 @@ async function boot() {
 
   // VR Room Manager - handles immersive room environments
   vrRoomMgr = new VRRoomManager(scene.scene, scene.playerGroup, {
+    // Pass the renderer so the manager can read `renderer.xr.getCamera()`
+    // and recenter the rig (head world pos / yaw) on room entry — this
+    // is what keeps the VR view aligned with the desktop view.
+    renderer: scene.renderer,
     onRoomEnter: (zoneId, room) => {
       isInVRRoom = true;
       const exitPortal = room.getExitPortal?.();
