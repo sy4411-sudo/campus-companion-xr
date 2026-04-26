@@ -1364,8 +1364,8 @@ export class CampusScene {
           'The Chat Corner — sit down, talk it out.\n那里有个温柔的小球陪着你。',
         ],
         study: [
-          '学习区还在装修中喔～\nThe Study Room is still being prepared. 之后会上线。',
-          '抱歉，学习区暂时不开放。\nStudy Room — coming soon!',
+          '学习区开放啦~\nThe Study Room is open. 绘绘会陪你出题、讲解。',
+          'Drop by the Study Room — \n那里有白板、课件卡和一只爱出题的小老师。',
         ],
         leisure: [
           '休闲区是一个家庭影院。\nThe Leisure Lounge — a real home cinema.',

@@ -939,60 +939,1158 @@ class ChatVRRoom extends VRRoom {
 // ============================================================
 //  Study Room (学习区)
 // ============================================================
+/**
+ * StudyVRRoom — interactive classroom mirroring LeisureVRRoom's architecture.
+ *
+ * Layout (room is 18m × 16m × 6m, back wall at z = -8):
+ *   • Back wall  — large 6×3m whiteboard driven by a CanvasTexture that
+ *                  switches between idle / lesson / quiz / result modes.
+ *   • Left wall  — six clickable "AR study cards" arranged in a 3×2 grid,
+ *                  each picking a topic for the AI tutor to teach.
+ *   • In front of the board — A/B/C/D answer pad (visible only in quiz
+ *                  mode) plus a 4-button control bar (EXPLAIN / QUIZ /
+ *                  HINT / NEXT) reachable via VR controller raycast.
+ *   • Floor      — six tripo desks + chairs in two rows facing the board.
+ *   • Companion  — 绘绘 (mint-teal AICompanion orb): patient teacher voice.
+ *
+ * The companion's bubble uses the same widget the chat zone uses; nothing
+ * leaks to the desktop chat panel. A static lesson + quiz bank lives in
+ * `_initLessons()` so the room works fully offline (no API calls needed).
+ */
 class StudyVRRoom extends VRRoom {
   constructor(scene, options = {}) {
     super(scene, options);
+
+    // ── Companion follow + chatter state (mirror of leisure / chat) ──
+    // Same shape as LeisureVRRoom: convert player world pos → room-local,
+    // place 绘绘 at a comfortable side-and-slightly-forward offset so she
+    // reads as walking the player through each lesson.
+    this._studentLocal = new THREE.Vector3();
+    this._followOffset = new THREE.Vector3(1.4, -0.45, 0.6);
+    this._idleTimer    = null;
+    this._greetTimer   = null;
+    this._lastSaidAt   = 0;
+
+    // ── Lesson / quiz state machine ───────────────────────────
+    //  'idle'    — no topic selected; companion suggests picking a card.
+    //  'lesson'  — board shows topic intro + key bullet points.
+    //  'quiz'    — board shows current question + 4 options, A/B/C/D
+    //              answer pad becomes visible / interactive.
+    //  'result'  — feedback banner after a quiz answer; auto-returns to
+    //              'quiz' on NEXT click.
+    this._currentTopic    = null;     // full topic object
+    this._currentMode     = 'idle';
+    this._currentQuizIdx  = 0;
+    this._lastResultOk    = null;     // last answer correct? (for result UI)
+
+    // ── Whiteboard + answer-pad rendering refs (lazy) ─────────
+    this._boardCanvas  = null;
+    this._boardCtx     = null;
+    this._boardTex     = null;
+    this._boardMesh    = null;
+    this._answerPad    = [];          // 4 button meshes, hidden by default
+
+    // Build the static lesson + quiz bank and the dialogue pools.
+    this._initLessons();
+    this._initStudyLines();
+
     this.build();
   }
 
+  // ── Room construction ──────────────────────────────────────
   build() {
-    this._buildRoom(16, 18, 5, 0xE8E0D0, 0xF0F8FF);
-    this._buildAICompanion(0, 0.5, -4, 0x98B8D8);
-    this._buildExitDoor(0, 0, 8);
-    
-    // Cool lighting
-    const coolLight = new THREE.PointLight(0xE0E8FF, 0.6, 15);
-    coolLight.position.set(0, 4, -2);
-    this.group.add(coolLight);
-    
-    // Whiteboard
-    const boardFrameMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.5 });
-    const boardFrame = new THREE.Mesh(new THREE.BoxGeometry(5, 2.5, 0.1), boardFrameMat);
-    boardFrame.position.set(0, 2.5, -8.9);
-    this.group.add(boardFrame);
-    
-    const boardMat = new THREE.MeshStandardMaterial({ color: 0xFFFFFF, roughness: 0.3 });
-    const board = new THREE.Mesh(new THREE.PlaneGeometry(4.8, 2.3), boardMat);
-    board.position.set(0, 2.5, -8.84);
+    // Bespoke library shell (warm cream walls + oak floor + acoustic
+    // ceiling tiles + cove halo). Replaces the cold base shell so the
+    // room reads as a real seminar room before any prop loads.
+    this._buildLibraryShell(18, 16, 6);
+
+    // 绘绘 — mint-teal companion. Spawns near the right side of the
+    // board so on entry the player sees her drift over toward them.
+    this._buildAICompanion(-5.5, 1.2, 5.0, 0x7DD3C0);
+
+    // Exit portal at the front of the room (z = +7 toward the
+    // entrance), same convention as the other zone rooms.
+    this._buildExitDoor(0, 0, 7);
+
+    // Lighting rig — warm pendant key + soft hemisphere fill +
+    // four pendant point lights along the ceiling for depth.
+    this.group.add(new THREE.HemisphereLight(0xfff0d8, 0x3a2a1a, 0.42));
+    this.group.add(new THREE.AmbientLight(0xffe6c8, 0.20));
+    const pendantPositions = [
+      [-4, 4.6, -3], [ 4, 4.6, -3], [-4, 4.6, 2], [ 4, 4.6, 2],
+    ];
+    for (const [x, y, z] of pendantPositions) {
+      const l = new THREE.PointLight(0xffd9a0, 0.65, 9.0, 1.6);
+      l.position.set(x, y, z);
+      this.group.add(l);
+    }
+
+    // Interactive surfaces (registered via this.interactables so the
+    // desktop click handler and the VR controller raycast both work):
+    this._buildWhiteboard();
+    this._buildAnswerPad();      // A/B/C/D row (hidden until quiz mode)
+    this._buildControlBar();     // EXPLAIN / QUIZ / HINT / NEXT
+    this._buildTopicCards();     // 6 clickable AR study cards on left wall
+
+    // Furniture: six student desks + two flanking bookshelves + a
+    // teacher's lectern up front. All cached on the tripo loader, so
+    // the six desks share a single network fetch.
+    this._buildStudyFurniture();
+
+    // Initialise the whiteboard with the idle slate.
+    this._setBoard('idle');
+
+    this.onReady();
+  }
+
+  // Spawn the player a few metres in front of the entrance, well clear
+  // of the seats and facing the whiteboard.
+  getSpawnPoint() {
+    return this.roomPosition.clone().add(new THREE.Vector3(0, 0, 5));
+  }
+
+  // ── Lifecycle ──────────────────────────────────────────────
+  enter() {
+    super.enter();
+    if (this._greetTimer) clearTimeout(this._greetTimer);
+    this._greetTimer = setTimeout(() => {
+      this._greetTimer = null;
+      if (!this.isActive) return;
+      this._say('greet');
+      this._scheduleIdleChatter(10000 + Math.random() * 7000);
+    }, 1700);
+  }
+
+  exit() {
+    super.exit();
+    if (this._idleTimer)  { clearTimeout(this._idleTimer);  this._idleTimer  = null; }
+    if (this._greetTimer) { clearTimeout(this._greetTimer); this._greetTimer = null; }
+    this.companion?.hideBubble?.();
+    this.companion?.setMode?.('idle');
+    this.companion?.setExpression?.('idle');
+    this.companion?.setFollowTarget?.(null);
+
+    // Reset transient state so a re-entry starts fresh.
+    this._currentTopic   = null;
+    this._currentMode    = 'idle';
+    this._currentQuizIdx = 0;
+    this._lastResultOk   = null;
+    if (this._boardTex) this._setBoard('idle');
+    this._setAnswerPadVisible(false);
+  }
+
+  // Per-frame: pull 绘绘 to the side-of-player offset, clamped inside
+  // the room. Mirrors LeisureVRRoom.updateStudentPosition exactly.
+  updateStudentPosition(worldPos) {
+    if (!this.companion) return;
+    const local = this._studentLocal.copy(worldPos).sub(this.roomPosition);
+    this.companion.lookAtStudent(local.clone());
+
+    const tgt = local.clone().add(this._followOffset);
+    const half  = (this.roomSize?.width || 18) / 2 - 1.0;
+    const halfD = (this.roomSize?.depth || 16) / 2 - 1.0;
+    tgt.x = Math.max(-half,  Math.min(half,  tgt.x));
+    tgt.z = Math.max(-halfD, Math.min(halfD, tgt.z));
+    tgt.y = Math.max(0.6, Math.min(1.6, tgt.y));
+    this.companion.setFollowTarget(tgt);
+  }
+
+  // ── Static lesson + quiz bank ──────────────────────────────
+  // Six topics × three quiz items each. Bilingual question copy keeps
+  // the room useful for both audiences without a server round-trip.
+  _initLessons() {
+    this._topics = [
+      {
+        id: 'algebra', emoji: '➕',
+        en: 'Algebra', zh: '代数 · 一元一次方程',
+        accent: '#FFB870',
+        intro:
+          '我们来解一元一次方程。\n' +
+          'Let\'s work through linear equations together.',
+        keyPoints: [
+          'Move terms across "=" → flip the sign',
+          '左右两边同乘 / 同除一个非零数, 等式仍成立',
+          'Goal: isolate x · 把未知数独立出来',
+        ],
+        quiz: [
+          { q: 'Solve  2x + 5 = 13', zh: '解  2x + 5 = 13',
+            options: ['x = 3', 'x = 4', 'x = 5', 'x = 6'], answer: 1,
+            hint: '先两边同时减 5, 再除以 2.\nSubtract 5 first, then divide by 2.',
+            explain: '2x = 8 → x = 4. 不难吧?' },
+          { q: 'Solve  3(x − 2) = 9', zh: '解  3(x − 2) = 9',
+            options: ['x = 1', 'x = 3', 'x = 5', 'x = 7'], answer: 2,
+            hint: '先除以 3, 再两边加 2.\nDivide both sides by 3 first, then add 2.',
+            explain: 'x − 2 = 3 → x = 5.' },
+          { q: 'If  x + y = 10  and  y = 4, find x', zh: '若 x + y = 10, y = 4, 求 x',
+            options: ['4', '5', '6', '7'], answer: 2,
+            hint: '把 y 代入第一个式子.\nSubstitute y = 4 into the first equation.',
+            explain: 'x + 4 = 10 → x = 6.' },
+        ],
+      },
+      {
+        id: 'geometry', emoji: '📐',
+        en: 'Geometry', zh: '几何 · 三角形与圆',
+        accent: '#9FD8E8',
+        intro:
+          '几何里, 三角形和圆是一切的起点。\n' +
+          'Triangles and circles are where geometry begins.',
+        keyPoints: [
+          'Triangle interior angles sum to 180°',
+          '圆面积 = π · r²; 周长 = 2π · r',
+          'Right triangle: a² + b² = c² (Pythagoras)',
+        ],
+        quiz: [
+          { q: 'Sum of interior angles of a triangle?', zh: '三角形的内角和是多少?',
+            options: ['90°', '180°', '270°', '360°'], answer: 1,
+            hint: '一张纸折成三角形, 三个角合起来是一条直线.',
+            explain: '三角形的三个内角永远加起来是 180°.' },
+          { q: 'Area of a circle with radius 3?', zh: '半径为 3 的圆面积是多少?',
+            options: ['6π', '9π', '12π', '18π'], answer: 1,
+            hint: 'Area = π · r².',
+            explain: 'π · 3² = 9π.' },
+          { q: 'In a right triangle with legs 3 and 4, hypotenuse = ?', zh: '直角三角形两直角边 3 与 4, 斜边是多少?',
+            options: ['5', '6', '7', '√25 + 5'], answer: 0,
+            hint: 'Pythagoras: a² + b² = c².',
+            explain: '3² + 4² = 9 + 16 = 25 → c = 5.' },
+        ],
+      },
+      {
+        id: 'english', emoji: '📖',
+        en: 'English Reading', zh: '英文阅读 · 词义与语法',
+        accent: '#F0A8B8',
+        intro:
+          '阅读不是查每一个生字, 是抓住句子的骨架。\n' +
+          'Reading well means catching the sentence\'s spine, not every word.',
+        keyPoints: [
+          'Skim first for the topic sentence',
+          '注意上下文里的同义词 / 反义词',
+          'Watch tone words — adjectives + adverbs',
+        ],
+        quiz: [
+          { q: 'Choose the synonym of "happy".', zh: '选出 "happy" 的同义词.',
+            options: ['sad', 'joyful', 'angry', 'tired'], answer: 1,
+            hint: '想一想哪个词的情感色彩和 happy 最像.',
+            explain: '"Joyful" 表示快乐的、欢喜的, 是 "happy" 最贴近的同义词.' },
+          { q: '"She gave a brief speech." What does "brief" mean?', zh: '"brief" 在这里是什么意思?',
+            options: ['long', 'short', 'loud', 'quiet'], answer: 1,
+            hint: 'Brief 在描述时间长短.',
+            explain: '"Brief" 表示简短的, 时间不长.' },
+          { q: 'Pick the right preposition: "I am good ___ math."', zh: '选合适的介词: "I am good ___ math."',
+            options: ['in', 'on', 'at', 'with'], answer: 2,
+            hint: 'Good ___ + 学科 / 技能, 是个固定搭配.',
+            explain: '固定搭配是 "good at + 名词", 表示擅长某事.' },
+        ],
+      },
+      {
+        id: 'biology', emoji: '🧬',
+        en: 'Biology', zh: '生物 · 细胞与遗传',
+        accent: '#A8E0A0',
+        intro:
+          '生物从细胞讲起, 再到遗传与生态。\n' +
+          'Biology starts with cells, then heredity and ecosystems.',
+        keyPoints: [
+          'Plants make food via photosynthesis (CO₂ + H₂O + light)',
+          '线粒体是细胞的"能量工厂" (Mitochondria → ATP)',
+          'DNA 由 4 种碱基组成: A, T, C, G',
+        ],
+        quiz: [
+          { q: 'Which organelle is the cell\'s "power plant"?', zh: '哪个细胞器被称作"能量工厂"?',
+            options: ['Nucleus', 'Mitochondrion', 'Ribosome', 'Vacuole'], answer: 1,
+            hint: '它把营养物质变成 ATP.',
+            explain: '线粒体 (mitochondrion) 通过细胞呼吸生成 ATP, 是细胞的"发电站".' },
+          { q: 'Photosynthesis needs all of these EXCEPT?', zh: '光合作用不需要下面哪一项?',
+            options: ['Sunlight', 'Water', 'Carbon dioxide', 'Oxygen'], answer: 3,
+            hint: '想想光合作用产物里有什么.',
+            explain: '光合作用消耗 CO₂ + H₂O + 光, 释放出 O₂; O₂ 是产物而不是原料.' },
+          { q: 'How many bases are in DNA?', zh: 'DNA 由几种碱基组成?',
+            options: ['2', '3', '4', '5'], answer: 2,
+            hint: '记一下: A/T/C/G.',
+            explain: 'DNA 由腺嘌呤 A、胸腺嘧啶 T、胞嘧啶 C、鸟嘌呤 G 这 4 种碱基构成.' },
+        ],
+      },
+      {
+        id: 'history', emoji: '📜',
+        en: 'World History', zh: '历史 · 古代与近代',
+        accent: '#D9B879',
+        intro:
+          '历史不是背年份, 是看一群人为什么做了某个选择。\n' +
+          'History is about why people made the choices they did.',
+        keyPoints: [
+          'Tang Dynasty 唐朝 begins in 618 CE',
+          '活字印刷术: 北宋毕昇 (~1040 CE)',
+          'Apollo 11 lunar landing: July 1969',
+        ],
+        quiz: [
+          { q: 'Which year did the Tang Dynasty begin?', zh: '唐朝建立于哪一年?',
+            options: ['581', '618', '907', '960'], answer: 1,
+            hint: '李渊在隋末称帝, 那一年距 600 不远.',
+            explain: '618 年, 李渊建立唐朝, 定都长安.' },
+          { q: 'Who invented movable-type printing?', zh: '谁发明了活字印刷术?',
+            options: ['蔡伦 Cai Lun', '毕昇 Bi Sheng', '张衡 Zhang Heng', '祖冲之 Zu Chongzhi'], answer: 1,
+            hint: '北宋时期一位工匠.',
+            explain: '北宋毕昇约在 1040 年用胶泥制活字, 大幅提高了印书效率.' },
+          { q: 'Year of the first crewed Moon landing?', zh: '人类首次登月是哪一年?',
+            options: ['1957', '1961', '1969', '1972'], answer: 2,
+            hint: 'Apollo 11.',
+            explain: '1969 年 7 月 20 日, Apollo 11 把 Armstrong 与 Aldrin 送上了月球.' },
+        ],
+      },
+      {
+        id: 'programming', emoji: '💻',
+        en: 'Programming', zh: '编程 · JavaScript 入门',
+        accent: '#A8B8E8',
+        intro:
+          'JavaScript 的有趣之处在于它的"宽松"——\n' +
+          'JS is famously forgiving. That\'s a feature and a trap.',
+        keyPoints: [
+          'typeof null === "object"  (历史遗留 bug)',
+          '"+" 遇到字符串时变成拼接 → "2" + 2 = "22"',
+          'Recursion: 函数调用自己, 但要有终止条件',
+        ],
+        quiz: [
+          { q: 'What does  typeof null  return?', zh: 'typeof null  的结果是什么?',
+            options: ['"null"', '"object"', '"undefined"', '"number"'], answer: 1,
+            hint: '这是一个历史遗留的"bug-as-feature".',
+            explain: '出于历史原因, typeof null 返回 "object" —— 写规范的人当年没改回来.' },
+          { q: 'Result of  2 + "2"  in JavaScript?', zh: 'JavaScript 中 2 + "2" 的结果是?',
+            options: ['4', '"4"', '"22"', 'NaN'], answer: 2,
+            hint: '+ 一旦遇到字符串就会变成拼接.',
+            explain: '"+" 遇到字符串时是拼接而非加法, 数字 2 被转成字符串 "2", 拼接得到 "22".' },
+          { q: 'Which is true about recursion?', zh: '关于递归, 下列哪一项正确?',
+            options: [
+              'It cannot have a base case',
+              'It must call itself with smaller input until a base case',
+              'It always uses less memory than a loop',
+              'It cannot return a value',
+            ], answer: 1,
+            hint: '想想"什么时候停下来".',
+            explain: '递归一定要有基线条件 (base case), 并且每次自调用要让问题规模变小, 否则会栈溢出.' },
+        ],
+      },
+    ];
+  }
+
+  // Bilingual chatter pools for 绘绘. Mirrors leisure's `_idleLines`.
+  _initStudyLines() {
+    this._studyLines = {
+      greet: [
+        '欢迎来到学习区~ 我是绘绘.\n' +
+        'Welcome! I\'m 绘绘. Pick a card on the left wall — I\'ll teach you.',
+        '今天想学点什么? 左边墙上有六张课件卡.\n' +
+        'There are six topic cards on the left wall — pick one to start.',
+      ],
+      idleNoTopic: [
+        '想学什么都行, 选一张卡片我就开讲.\n' +
+        'Pick any card and I\'ll explain it for you.',
+        '我备课很久啦, 别让我闲着哦~\n' +
+        'I\'ve been waiting to teach. Pick a topic anytime.',
+      ],
+      idleInLesson: [
+        '看明白了再点 "QUIZ", 我来出题.\n' +
+        'When you\'re ready, hit QUIZ and I\'ll test you.',
+        '别急, 这一段我可以再讲一遍 —— 点 "EXPLAIN".\n' +
+        'No rush. Click EXPLAIN to recap if you\'d like.',
+      ],
+      idleInQuiz: [
+        '认真选选看~ 点 "HINT" 我会给个提示.\n' +
+        'Take your time. HINT gives you a small clue.',
+      ],
+      pickTopicFirst: [
+        '先选一张课件卡, 我才知道讲什么呢.\n' +
+        'Pick a card first so I know what to teach.',
+      ],
+      explain: [
+        '我来再讲一遍核心要点.\n' +
+        'Let me walk through the key points again.',
+        '记不住没关系, 我们再来一遍.\n' +
+        'It\'s okay if it didn\'t click. Once more, slowly.',
+      ],
+      hintUsed: [
+        '小提示送上 ✦\nHere\'s a hint.',
+      ],
+      noQuizYet: [
+        '现在还没有题目哦, 先点 "QUIZ" 开始.\n' +
+        'No active question yet — tap QUIZ to start one.',
+      ],
+      correct: [
+        '答对啦! 漂亮 ✦\nNice — that\'s correct!',
+        '没错! 这一题你拿下了.\n' +
+        'Exactly. You got it.',
+        '回答完美~\n' +
+        'Perfect answer.',
+      ],
+      wrong: [
+        '差一点点, 再看看选项.\n' +
+        'Almost — give the options another look.',
+        '别慌, 我们一起再分析一遍.\n' +
+        'Don\'t worry. Let\'s think it through together.',
+      ],
+    };
+  }
+
+  // ── Speech helpers (mirror of LeisureVRRoom._say) ─────────
+  _say(category, payload) {
+    if (!this.companion?.say) return;
+    const pool = this._studyLines?.[category];
+    let text;
+    if (Array.isArray(pool) && pool.length) {
+      text = pool[(Math.random() * pool.length) | 0];
+    } else if (typeof payload === 'string') {
+      text = payload;
+    }
+    if (!text) return;
+    this.companion.say(text);
+    this._lastSaidAt = performance.now();
+  }
+
+  // Recursive idle-chatter scheduler (same shape as leisure).
+  _scheduleIdleChatter(initialDelayMs) {
+    if (this._idleTimer) clearTimeout(this._idleTimer);
+    const delay = initialDelayMs ?? (15000 + Math.random() * 9000);
+    this._idleTimer = setTimeout(() => {
+      this._idleTimer = null;
+      if (!this.isActive) return;
+      // Don't pile a fresh idle bubble on top of a recent reaction.
+      if (performance.now() - this._lastSaidAt > 5000) {
+        if      (this._currentMode === 'quiz')   this._say('idleInQuiz');
+        else if (this._currentMode === 'lesson' ||
+                 this._currentMode === 'result') this._say('idleInLesson');
+        else                                     this._say('idleNoTopic');
+      }
+      this._scheduleIdleChatter();
+    }, Math.max(2000, delay));
+  }
+
+  // ── Topic / quiz interactions ──────────────────────────────
+  _startTopic(topic) {
+    this._currentTopic    = topic;
+    this._currentMode     = 'lesson';
+    this._currentQuizIdx  = 0;
+    this._lastResultOk    = null;
+    this._setAnswerPadVisible(false);
+    this._setBoard('lesson');
+    this.companion?.setExpression?.('happy');
+    this._say(null, topic.intro);
+  }
+
+  _startQuiz() {
+    if (!this._currentTopic) {
+      this.companion?.setExpression?.('thinking');
+      this._say('pickTopicFirst');
+      return;
+    }
+    this._currentMode    = 'quiz';
+    this._currentQuizIdx = 0;
+    this._lastResultOk   = null;
+    this._setBoard('quiz');
+    this._setAnswerPadVisible(true);
+    this.companion?.setExpression?.('happy');
+    this._say(null, '出题啦, 看清楚选项哦.\nHere\'s your first question — pick A, B, C or D.');
+  }
+
+  _explain() {
+    if (!this._currentTopic) {
+      this._say('pickTopicFirst');
+      return;
+    }
+    this._currentMode  = 'lesson';
+    this._lastResultOk = null;
+    this._setAnswerPadVisible(false);
+    this._setBoard('lesson');
+    this.companion?.setExpression?.('thinking');
+    this._say('explain');
+  }
+
+  _hint() {
+    if (this._currentMode !== 'quiz' || !this._currentTopic) {
+      this._say('noQuizYet');
+      return;
+    }
+    const item = this._currentTopic.quiz[this._currentQuizIdx];
+    this._say('hintUsed');
+    setTimeout(() => {
+      if (this.isActive) this.companion?.say?.(item.hint);
+    }, 1700);
+  }
+
+  _next() {
+    if (!this._currentTopic) {
+      this._say('pickTopicFirst');
+      return;
+    }
+    if (this._currentMode === 'lesson') { this._startQuiz(); return; }
+    // 'quiz' or 'result' → advance to the next quiz item, cycling at the end.
+    this._currentQuizIdx =
+      (this._currentQuizIdx + 1) % this._currentTopic.quiz.length;
+    this._currentMode  = 'quiz';
+    this._lastResultOk = null;
+    this._setBoard('quiz');
+    this._setAnswerPadVisible(true);
+    this.companion?.setExpression?.('happy');
+    this._say(null, '下一题来咯~\nNext one!');
+  }
+
+  _answer(idx) {
+    if (this._currentMode !== 'quiz' || !this._currentTopic) {
+      this._say('noQuizYet');
+      return;
+    }
+    const item = this._currentTopic.quiz[this._currentQuizIdx];
+    const ok = (idx === item.answer);
+    this._lastResultOk = ok;
+    this._currentMode  = 'result';
+    this._setBoard('result', { picked: idx });
+    this._setAnswerPadVisible(false);
+    if (ok) {
+      this.companion?.setExpression?.('happy');
+      this._say('correct');
+      setTimeout(() => {
+        if (this.isActive) this.companion?.say?.(item.explain);
+      }, 1700);
+    } else {
+      this.companion?.setExpression?.('thinking');
+      this._say('wrong');
+      setTimeout(() => {
+        if (this.isActive) this.companion?.say?.(item.explain);
+      }, 1900);
+    }
+  }
+
+  // ── Library shell (warm cream walls + oak floor + ceiling) ─
+  _buildLibraryShell(width, depth, height) {
+    this.roomSize = { width, depth, height };
+
+    // Floor — warm oak
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0x8a6038, roughness: 0.78, metalness: 0.05,
+    });
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    this.group.add(floor);
+
+    // Walls — soft cream with slight warm tone
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0xf3eadb, roughness: 0.92, side: THREE.DoubleSide,
+    });
+    // Back wall (where the whiteboard mounts)
+    const backWall = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, height), wallMat);
+    backWall.position.set(0, height / 2, -depth / 2);
+    this.group.add(backWall);
+
+    // Side walls
+    const leftWall = new THREE.Mesh(
+      new THREE.PlaneGeometry(depth, height), wallMat.clone());
+    leftWall.rotation.y = Math.PI / 2;
+    leftWall.position.set(-width / 2, height / 2, 0);
+    this.group.add(leftWall);
+
+    const rightWall = new THREE.Mesh(
+      new THREE.PlaneGeometry(depth, height), wallMat.clone());
+    rightWall.rotation.y = -Math.PI / 2;
+    rightWall.position.set(width / 2, height / 2, 0);
+    this.group.add(rightWall);
+
+    // Front wall (opposite the board, around the exit door)
+    const frontWall = new THREE.Mesh(
+      new THREE.PlaneGeometry(width, height), wallMat.clone());
+    frontWall.rotation.y = Math.PI;
+    frontWall.position.set(0, height / 2, depth / 2);
+    this.group.add(frontWall);
+
+    // Ceiling — pale acoustic-tile look
+    const ceilMat = new THREE.MeshStandardMaterial({
+      color: 0xfaf5ea, roughness: 0.95,
+    });
+    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), ceilMat);
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.y = height;
+    this.group.add(ceiling);
+
+    // Wood baseboard ring — subtle warmth at floor level.
+    const baseMat = new THREE.MeshStandardMaterial({
+      color: 0x4a3018, roughness: 0.7,
+    });
+    const front  = new THREE.Mesh(new THREE.BoxGeometry(width, 0.18, 0.06), baseMat);
+    front.position.set(0, 0.09,  depth / 2 - 0.03);
+    this.group.add(front);
+    const back   = new THREE.Mesh(new THREE.BoxGeometry(width, 0.18, 0.06), baseMat);
+    back.position.set(0, 0.09, -depth / 2 + 0.03);
+    this.group.add(back);
+    const lside  = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.18, depth), baseMat);
+    lside.position.set(-width / 2 + 0.03, 0.09, 0);
+    this.group.add(lside);
+    const rside  = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.18, depth), baseMat);
+    rside.position.set( width / 2 - 0.03, 0.09, 0);
+    this.group.add(rside);
+  }
+
+  // ── Whiteboard ─────────────────────────────────────────────
+  // Builds a 6×3m whiteboard on the back wall whose front face is a
+  // CanvasTexture we redraw whenever the lesson state changes.
+  _buildWhiteboard() {
+    const wallZ = -this.roomSize.depth / 2 + 0.02;
+
+    // Frame (dark walnut)
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3a2a18, roughness: 0.6 });
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(6.4, 3.4, 0.12), frameMat);
+    frame.position.set(0, 2.5, wallZ + 0.08);
+    this.group.add(frame);
+
+    // Whiteboard surface — driven by canvas
+    const W = 1280, H = 640;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    const boardMat = new THREE.MeshStandardMaterial({
+      map: tex, emissive: 0xffffff, emissiveMap: tex,
+      emissiveIntensity: 0.18, roughness: 0.35, metalness: 0.05,
+    });
+    const board = new THREE.Mesh(new THREE.PlaneGeometry(6.0, 3.0), boardMat);
+    board.position.set(0, 2.5, wallZ + 0.16);
     this.group.add(board);
-    
-    // Student desks + chairs (cached → 1 fetch for all 6 seats).
+
+    this._boardCanvas = cv;
+    this._boardCtx    = ctx;
+    this._boardTex    = tex;
+    this._boardMesh   = board;
+
+    // Tiny mounting tray below the board (decorative).
+    const trayMat = new THREE.MeshStandardMaterial({ color: 0xc0a070, roughness: 0.4, metalness: 0.4 });
+    const tray = new THREE.Mesh(new THREE.BoxGeometry(6.2, 0.06, 0.18), trayMat);
+    tray.position.set(0, 0.95, wallZ + 0.18);
+    this.group.add(tray);
+  }
+
+  // Re-render the whiteboard for a given mode.
+  // mode: 'idle' | 'lesson' | 'quiz' | 'result'
+  _setBoard(mode, payload) {
+    if (!this._boardCtx) return;
+    const ctx = this._boardCtx;
+    const W = this._boardCanvas.width, H = this._boardCanvas.height;
+
+    // Wipe with a slightly off-white "marker board" tone.
+    ctx.fillStyle = '#fbfaf5';
+    ctx.fillRect(0, 0, W, H);
+
+    // Subtle grid for a real-classroom feel.
+    ctx.strokeStyle = 'rgba(0,0,0,0.045)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < W; x += 40) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let y = 0; y < H; y += 40) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    const topic = this._currentTopic;
+    if (mode === 'idle' || !topic) {
+      // Idle slate: classroom title + how-to.
+      ctx.fillStyle = '#2a2418';
+      ctx.font = '700 92px "Georgia", "Times New Roman", serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Study Room', W / 2, H * 0.30);
+
+      ctx.font = '500 60px "PingFang SC","Microsoft YaHei",sans-serif';
+      ctx.fillStyle = '#5a4830';
+      ctx.fillText('学习区 · 互动课堂', W / 2, H * 0.46);
+
+      // CTA line
+      ctx.font = '500 38px "Inter","Helvetica Neue",sans-serif';
+      ctx.fillStyle = '#7a5a30';
+      ctx.fillText('← Pick a card on the left wall to start', W / 2, H * 0.66);
+      ctx.font = '500 36px "PingFang SC","Microsoft YaHei",sans-serif';
+      ctx.fillStyle = '#7a5a30';
+      ctx.fillText('或选择左墙上的一张课件卡开始', W / 2, H * 0.78);
+
+      this._boardTex.needsUpdate = true;
+      return;
+    }
+
+    // Top accent bar in the topic colour for visual identity.
+    ctx.fillStyle = topic.accent || '#FFB870';
+    ctx.fillRect(0, 0, W, 14);
+
+    // Topic title row (emoji + EN + ZH).
+    ctx.fillStyle = '#2a2418';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = '90px "Segoe UI Emoji", Arial';
+    const emojiX = 60, titleY = 90;
+    ctx.fillText(topic.emoji, emojiX, titleY);
+    ctx.font = '700 64px "Georgia", "Times New Roman", serif';
+    ctx.fillText(topic.en, emojiX + 110, titleY - 6);
+    ctx.font = '500 44px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillStyle = '#6e4a26';
+    ctx.fillText('· ' + topic.zh, emojiX + 110 + ctx.measureText(topic.en).width + 30, titleY + 4);
+
+    // Mode-specific body
+    if (mode === 'lesson') {
+      this._drawLessonBody(ctx, W, H, topic);
+    } else if (mode === 'quiz') {
+      const q = topic.quiz[this._currentQuizIdx];
+      this._drawQuizBody(ctx, W, H, q, this._currentQuizIdx, topic.quiz.length);
+    } else if (mode === 'result') {
+      const q = topic.quiz[this._currentQuizIdx];
+      this._drawResultBody(ctx, W, H, q, this._lastResultOk, payload?.picked);
+    }
+
+    this._boardTex.needsUpdate = true;
+  }
+
+  _drawLessonBody(ctx, W, H, topic) {
+    ctx.fillStyle = '#2a2418';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = '500 36px "Inter","Helvetica Neue",sans-serif';
+
+    let y = 180;
+    const x = 80;
+    ctx.fillStyle = '#3a2a18';
+    ctx.font = '600 38px "Inter","Helvetica Neue",sans-serif';
+    ctx.fillText('Key points · 核心要点', x, y);
+    y += 60;
+
+    ctx.font = '500 32px "Inter","PingFang SC",sans-serif';
+    ctx.fillStyle = '#2a2418';
+    for (const pt of topic.keyPoints) {
+      // Bullet
+      ctx.fillStyle = topic.accent || '#FFB870';
+      ctx.beginPath(); ctx.arc(x + 10, y + 18, 8, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#2a2418';
+      ctx.fillText(pt, x + 36, y);
+      y += 56;
+    }
+
+    // Footer hint to encourage moving to quiz.
+    y = H - 80;
+    ctx.fillStyle = '#7a5a30';
+    ctx.font = '500 28px "Inter","PingFang SC",sans-serif';
+    ctx.fillText('Press QUIZ to test yourself · 按 QUIZ 让我出题', x, y);
+  }
+
+  _drawQuizBody(ctx, W, H, q, qIdx, qTotal) {
+    const x = 80;
+    let y = 180;
+
+    // Question counter chip
+    ctx.fillStyle = 'rgba(122, 90, 48, 0.15)';
+    this._roundRect(ctx, x, y, 240, 46, 23); ctx.fill();
+    ctx.fillStyle = '#7a5a30';
+    ctx.font = '600 26px "Inter","PingFang SC",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`Question ${qIdx + 1} / ${qTotal}`, x + 120, y + 23);
+
+    // Question (EN over ZH)
+    y += 80;
+    ctx.fillStyle = '#2a2418';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = '600 40px "Inter","Helvetica Neue",sans-serif';
+    ctx.fillText(q.q, x, y);
+    y += 55;
+    ctx.fillStyle = '#5a4830';
+    ctx.font = '500 32px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText(q.zh, x, y);
+
+    // Options as a 2×2 grid pinned to the lower half so it feels like
+    // an exam paper rather than a wall of text.
+    const labels = ['A', 'B', 'C', 'D'];
+    const padX = 80, padY = 360;
+    const colW = (W - padX * 2 - 30) / 2;
+    const rowH = 110;
+    for (let i = 0; i < 4; i++) {
+      const cx = padX + (i % 2) * (colW + 30);
+      const cy = padY + ((i / 2) | 0) * (rowH + 20);
+      // Card
+      ctx.fillStyle = 'rgba(255, 248, 234, 1)';
+      this._roundRect(ctx, cx, cy, colW, rowH, 18); ctx.fill();
+      ctx.strokeStyle = 'rgba(122, 90, 48, 0.4)'; ctx.lineWidth = 2;
+      this._roundRect(ctx, cx, cy, colW, rowH, 18); ctx.stroke();
+      // Letter chip
+      ctx.fillStyle = '#7a5a30';
+      ctx.beginPath(); ctx.arc(cx + 38, cy + rowH / 2, 26, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = '700 32px "Inter",sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(labels[i], cx + 38, cy + rowH / 2 + 2);
+      // Option text
+      ctx.fillStyle = '#2a2418';
+      ctx.font = '500 32px "Inter","PingFang SC",sans-serif';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(q.options[i], cx + 80, cy + rowH / 2 + 2);
+    }
+  }
+
+  _drawResultBody(ctx, W, H, q, ok, picked) {
+    // Reuse the quiz layout, then overlay a result banner that highlights
+    // the correct + picked options.
+    const labels = ['A', 'B', 'C', 'D'];
+
+    // Question echo (shorter, since result banner takes vertical space).
+    let y = 180;
+    const x = 80;
+    ctx.fillStyle = '#2a2418';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = '600 38px "Inter","Helvetica Neue",sans-serif';
+    ctx.fillText(q.q, x, y);
+    y += 50;
+    ctx.fillStyle = '#5a4830';
+    ctx.font = '500 30px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText(q.zh, x, y);
+
+    // Banner
+    y = 290;
+    ctx.fillStyle = ok ? 'rgba(72, 160, 110, 0.18)' : 'rgba(200, 80, 80, 0.18)';
+    this._roundRect(ctx, x, y, W - x * 2, 70, 16); ctx.fill();
+    ctx.fillStyle = ok ? '#2c8c5c' : '#a4423c';
+    ctx.font = '700 36px "Inter","PingFang SC",sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(
+      ok ? `✓  Correct! · 答对啦` : `✗  Not quite · 再试一次`,
+      x + 24, y + 35);
+
+    // Options grid with highlight
+    const padX = 80, padY = 400;
+    const colW = (W - padX * 2 - 30) / 2;
+    const rowH = 100;
+    for (let i = 0; i < 4; i++) {
+      const cx = padX + (i % 2) * (colW + 30);
+      const cy = padY + ((i / 2) | 0) * (rowH + 18);
+      const isAnswer = (i === q.answer);
+      const isPicked = (i === picked);
+      // Card fill
+      if (isAnswer) ctx.fillStyle = 'rgba(72, 160, 110, 0.28)';
+      else if (isPicked && !ok) ctx.fillStyle = 'rgba(200, 80, 80, 0.20)';
+      else ctx.fillStyle = 'rgba(255, 248, 234, 1)';
+      this._roundRect(ctx, cx, cy, colW, rowH, 16); ctx.fill();
+      // Border
+      if (isAnswer) ctx.strokeStyle = '#2c8c5c';
+      else if (isPicked && !ok) ctx.strokeStyle = '#a4423c';
+      else ctx.strokeStyle = 'rgba(122, 90, 48, 0.3)';
+      ctx.lineWidth = isAnswer || (isPicked && !ok) ? 3 : 2;
+      this._roundRect(ctx, cx, cy, colW, rowH, 16); ctx.stroke();
+      // Letter chip
+      ctx.fillStyle = isAnswer ? '#2c8c5c' : (isPicked && !ok ? '#a4423c' : '#7a5a30');
+      ctx.beginPath(); ctx.arc(cx + 36, cy + rowH / 2, 24, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = '700 28px "Inter",sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(labels[i], cx + 36, cy + rowH / 2 + 2);
+      // Option text
+      ctx.fillStyle = '#2a2418';
+      ctx.font = '500 30px "Inter","PingFang SC",sans-serif';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(q.options[i], cx + 76, cy + rowH / 2 + 2);
+    }
+  }
+
+  // Tiny rounded-rectangle helper (canvas only).
+  _roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  // ── A/B/C/D answer pad ─────────────────────────────────────
+  // Four buttons in a row directly in front of the whiteboard. Each
+  // one carries a label drawn into a small CanvasTexture and a
+  // userData.onClick that calls _answer(idx). They're hidden until
+  // a quiz is active and shown again on _startQuiz / _next.
+  _buildAnswerPad() {
+    const wallZ = -this.roomSize.depth / 2;
+    const padW = 0.95, padH = 0.55, padD = 0.10;
+    const gap  = 0.18;
+    const barZ = wallZ + 4.4;
+    const barY = 1.45;
+    const labels = ['A', 'B', 'C', 'D'];
+    const colors = ['#3aa56a', '#4a86e0', '#d99a3a', '#a45dc0'];
+    const total = 4 * padW + 3 * gap;
+    let x = -total / 2 + padW / 2;
+
+    const baseMat = new THREE.MeshStandardMaterial({
+      color: 0x1c1a28, roughness: 0.55, metalness: 0.2,
+    });
+
+    for (let i = 0; i < 4; i++) {
+      const tex = this._makeAnswerButtonTexture(labels[i], colors[i]);
+      const faceMat = new THREE.MeshStandardMaterial({
+        map: tex, emissive: 0xffffff, emissiveMap: tex,
+        emissiveIntensity: 0.6, roughness: 0.6, metalness: 0.1,
+      });
+      const pad = new THREE.Mesh(
+        new THREE.BoxGeometry(padW, padH, padD),
+        [baseMat, baseMat, baseMat, baseMat, faceMat, baseMat],
+      );
+      pad.position.set(x, barY, barZ);
+      pad.visible = false;
+      pad.userData.onClick = () => {
+        // Press feedback
+        const z0 = pad.position.z;
+        pad.position.z = z0 - 0.04;
+        setTimeout(() => { pad.position.z = z0; }, 120);
+        this._answer(i);
+      };
+      this.group.add(pad);
+      this.interactables.push(pad);
+      this._answerPad.push(pad);
+      x += padW + gap;
+    }
+  }
+
+  _setAnswerPadVisible(v) {
+    for (const m of this._answerPad) m.visible = !!v;
+  }
+
+  _makeAnswerButtonTexture(letter, accent) {
+    const W = 256, H = 144;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    // Vertical gradient body
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#2a2438');
+    grad.addColorStop(1, '#15101e');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    // Inner border
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 4;
+    ctx.strokeRect(8, 8, W - 16, H - 16);
+    // Big letter
+    ctx.fillStyle = accent;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '900 90px "Inter","Helvetica Neue",sans-serif';
+    ctx.fillText(letter, W / 2, H / 2);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Control bar (EXPLAIN / QUIZ / HINT / NEXT) ─────────────
+  // Nearer the seats (higher z) than the answer pad so the player can
+  // reach both rows comfortably with a VR controller.
+  _buildControlBar() {
+    const padW = 0.95, padH = 0.42, padD = 0.10;
+    const gap  = 0.12;
+    const barZ = -1.6;     // ~1.6m forward of room centre
+    const barY = 1.45;
+    const buttons = [
+      { primary: 'EXPLAIN', secondary: '讲解', action: () => this._explain() },
+      { primary: 'QUIZ',    secondary: '出题', action: () => this._startQuiz() },
+      { primary: 'HINT',    secondary: '提示', action: () => this._hint() },
+      { primary: 'NEXT',    secondary: '下一题', action: () => this._next() },
+    ];
+    const total = buttons.length * padW + (buttons.length - 1) * gap;
+    let x = -total / 2 + padW / 2;
+
+    const baseMat = new THREE.MeshStandardMaterial({
+      color: 0x1c1a28, roughness: 0.55, metalness: 0.2,
+    });
+    for (const def of buttons) {
+      const tex = this._makeRemoteButtonTexture(def.primary, def.secondary);
+      const faceMat = new THREE.MeshStandardMaterial({
+        map: tex, emissive: 0xffffff, emissiveMap: tex,
+        emissiveIntensity: 0.6, roughness: 0.6, metalness: 0.1,
+      });
+      const pad = new THREE.Mesh(
+        new THREE.BoxGeometry(padW, padH, padD),
+        [baseMat, baseMat, baseMat, baseMat, faceMat, baseMat],
+      );
+      pad.position.set(x, barY, barZ);
+      pad.userData.onClick = () => {
+        const z0 = pad.position.z;
+        pad.position.z = z0 - 0.04;
+        setTimeout(() => { pad.position.z = z0; }, 120);
+        def.action?.();
+      };
+      this.group.add(pad);
+      this.interactables.push(pad);
+      x += padW + gap;
+    }
+  }
+
+  // ── AR study cards (left wall, 3×2 grid) ───────────────────
+  // Six clickable courseware cards. Each card is a thin plane facing
+  // +X (player's right when entering) drawn from a CanvasTexture so
+  // it shows the topic emoji + EN + ZH + a "Tap to start" footer.
+  _buildTopicCards() {
+    const wallX = -this.roomSize.width / 2 + 0.05;
+    // 3 z-columns, 2 y-rows. Cards are 1.3w × 1.0h.
+    const cols = [-3.2, 0, 3.2];
+    const rows = [3.1, 1.7];
+    const cardW = 1.3, cardH = 1.0;
+    let i = 0;
+    for (const y of rows) {
+      for (const z of cols) {
+        if (i >= this._topics.length) return;
+        const topic = this._topics[i++];
+        const tex = this._makeTopicCardTexture(topic);
+        const mat = new THREE.MeshStandardMaterial({
+          map: tex, emissive: 0xffffff, emissiveMap: tex,
+          emissiveIntensity: 0.25, roughness: 0.45, metalness: 0.05,
+          transparent: true,
+        });
+        // Frame plane (slightly larger, dark backing for depth)
+        const frameMat = new THREE.MeshStandardMaterial({
+          color: 0x2a2018, roughness: 0.6,
+        });
+        const frame = new THREE.Mesh(
+          new THREE.PlaneGeometry(cardW + 0.08, cardH + 0.08), frameMat);
+        frame.position.set(wallX + 0.01, y, z);
+        frame.rotation.y = Math.PI / 2;        // face +X (into the room)
+        this.group.add(frame);
+
+        const card = new THREE.Mesh(new THREE.PlaneGeometry(cardW, cardH), mat);
+        card.position.set(wallX + 0.025, y, z);
+        card.rotation.y = Math.PI / 2;
+        card.userData.onClick = () => {
+          // Tiny pop animation: nudge forward then back.
+          const x0 = card.position.x;
+          card.position.x = x0 + 0.04;
+          setTimeout(() => { card.position.x = x0; }, 140);
+          this._startTopic(topic);
+        };
+        this.group.add(card);
+        this.interactables.push(card);
+      }
+    }
+  }
+
+  _makeTopicCardTexture(topic) {
+    const W = 384, H = 288;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+
+    // Card body — soft cream with a top accent stripe in topic colour.
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#fff5dd');
+    grad.addColorStop(1, '#f0e1bf');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = topic.accent || '#FFB870';
+    ctx.fillRect(0, 0, W, 12);
+
+    // Frame
+    ctx.strokeStyle = 'rgba(122, 90, 48, 0.5)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(6, 6, W - 12, H - 12);
+
+    // Emoji medallion
+    const medX = 70, medY = H * 0.42, medR = 38;
+    ctx.fillStyle = topic.accent || '#FFB870';
+    ctx.beginPath(); ctx.arc(medX, medY, medR, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '50px "Segoe UI Emoji", Arial';
+    ctx.fillText(topic.emoji, medX, medY + 4);
+
+    // EN title
+    ctx.fillStyle = '#2a2418';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.font = '700 36px "Georgia", "Times New Roman", serif';
+    ctx.fillText(topic.en, 130, 56);
+
+    // ZH subtitle
+    ctx.fillStyle = '#6e4a26';
+    ctx.font = '500 24px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText(topic.zh, 130, 102);
+
+    // CTA chip
+    const chipY = H - 64;
+    ctx.fillStyle = topic.accent || '#FFB870';
+    this._roundRect(ctx, 24, chipY, W - 48, 40, 20); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '600 22px "Inter","PingFang SC",sans-serif';
+    ctx.fillText('Tap to start · 点我开课', W / 2, chipY + 20);
+
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
+  }
+
+  // ── Furniture (desks + bookshelves + lectern) ─────────────
+  _buildStudyFurniture() {
+    // Six student desks + chairs in 2 rows × 3 cols, facing the board.
+    // Tripo loader convention: rotationY = 0 → model front faces -Z, so
+    // desks are placed with Y rotation = 0 to face the back wall.
     for (let row = 0; row < 2; row++) {
       for (let col = -1; col <= 1; col++) {
         mountTripoModel(this.group, 'student_desk_chair', {
-          position: [col * 2.5, 0, 3 + row * 2],
-          rotationY: Math.PI,           // face the whiteboard
+          position: [col * 2.6, 0, 1.2 + row * 2.0],
+          rotationY: 0,
           targetSize: 1.4,
           yAlign: 'bottom',
         });
       }
     }
-
-    // Teacher lectern.
-    mountTripoModel(this.group, 'lectern_oak',
-      { position: [0, 0, -5], targetSize: 2.0, yAlign: 'bottom' });
-
-    // Two side bookshelves (cached).
-    mountTripoModel(this.group, 'bookshelf_classroom',
-      { position: [-7, 0, 0], rotationY: Math.PI / 2, targetSize: 2.6, yAlign: 'bottom' });
-    mountTripoModel(this.group, 'bookshelf_classroom',
-      { position: [7, 0, 0], rotationY: -Math.PI / 2, targetSize: 2.6, yAlign: 'bottom' });
-
-    this.onReady();
+    // Teacher's lectern up front, off-centre so it doesn't block the
+    // whiteboard sightline from the desks.
+    mountTripoModel(this.group, 'lectern_oak', {
+      position: [4.0, 0, -4.5], rotationY: -Math.PI / 4,
+      targetSize: 1.8, yAlign: 'bottom',
+    });
+    // Bookshelves on the right wall (left wall is taken by the cards).
+    mountTripoModel(this.group, 'bookshelf_classroom', {
+      position: [7.4, 0, -3.5], rotationY: -Math.PI / 2,
+      targetSize: 2.6, yAlign: 'bottom',
+    });
+    mountTripoModel(this.group, 'bookshelf_classroom', {
+      position: [7.4, 0,  3.5], rotationY: -Math.PI / 2,
+      targetSize: 2.6, yAlign: 'bottom',
+    });
   }
 
-  getSpawnPoint() {
-    return this.roomPosition.clone().add(new THREE.Vector3(0, 0, 5));
+  // Reuse the same pill-button face texture style the leisure room
+  // uses for its remote, so the two zones feel like the same product.
+  _makeRemoteButtonTexture(primary, secondary) {
+    const W = 256, H = 128;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#2a2440');
+    grad.addColorStop(1, '#171328');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = 'rgba(150, 145, 220, 0.45)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(6, 6, W - 12, H - 12);
+    ctx.fillStyle = '#f1ecff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '700 38px "Segoe UI","Inter",Arial,sans-serif';
+    ctx.fillText(primary, W / 2, H / 2 - 10);
+    ctx.fillStyle = 'rgba(195, 188, 230, 0.78)';
+    ctx.font = '500 22px "PingFang SC","Microsoft YaHei",Arial,sans-serif';
+    ctx.fillText(secondary, W / 2, H / 2 + 28);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    return tex;
   }
 }
 
@@ -2496,7 +3594,7 @@ class GamesVRRoom extends VRRoom {
   _buildGomokuAssets() {
     const g = this._gomoku;
 
-    // Biconvex stone profile via LatheGeometry — proportional to a real
+    // Biconvex stone profile via LatheGeometry �� proportional to a real
     // Yunzi stone (R ≈ 0.42×cell, T ≈ 0.36×R). The silhouette is one
     // sphere arc on top, mirrored on the bottom, meeting at the equator.
     //
